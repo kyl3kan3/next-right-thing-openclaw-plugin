@@ -1,0 +1,93 @@
+# Next-Right-Thing Heartbeat (optional companion)
+
+The `next-right-thing` **plugin** keeps each agent turn honest, but OpenClaw is
+request-driven — it only acts when prompted. This **heartbeat** is the missing
+"continuation engine": a tiny, dependency-free runner that periodically asks your
+gateway *"what's the next right thing right now? do it,"* so the agent keeps making
+progress with no human in the loop. The plugin then gates risk and runs the finalize
+reflection on every turn it triggers.
+
+It is a **client of the gateway**, separate from the plugin's hook runtime. No npm
+deps; runs with plain `node`.
+
+## The goal model (three layers, one prompt)
+
+Each tick composes a single prompt from three files in `state/` — empty layers drop out:
+
+- **`state/mission.md`** — your standing north-star goal.
+- **`state/queue.json`** — an ordered backlog: `[{ "id", "title", "status", "notes" }]`
+  (items with `"status": "done"` are ignored).
+- **`state/context.md`** — rolling "what we were just doing." The agent is asked to
+  append a one-line note here each tick, so continuity survives across ticks.
+
+`<!-- HTML comments -->` are stripped, so the placeholder hints never reach the prompt.
+**Out of the box (no mission, empty queue) the heartbeat stays idle** until you set a goal.
+
+## Configure
+
+Copy `config.example.json` to `config.json` and edit:
+
+| Key | Meaning |
+|-----|---------|
+| `intervalSeconds` | Seconds between ticks (default 1800 = 30 min). |
+| `topBacklog` | How many backlog items to include in the prompt. |
+| `dryRun` | When true, print the prompt instead of sending it. **Leave true until you've seen it.** |
+| `quietHours` | `{ "start": 22, "end": 7 }` — no ticks during this window (wraps midnight). |
+| `maxTicksPerDay` | Hard daily cap so it can't run away or rack up cost. |
+| `trigger` | How to start a gateway turn — see below. |
+
+## ⚠️ Wire the trigger to your gateway (the one install-specific step)
+
+The heartbeat must call **your** OpenClaw gateway to start a turn, and that call is
+version-specific. The example config uses a **placeholder** (`openclaw agent run …`) —
+confirm the real one with `openclaw --help`, the Control UI, or your gateway's API docs.
+Two adapters are provided:
+
+- **`command`** — runs a CLI command; the prompt is piped to stdin (or appended as an arg).
+  ```json
+  "trigger": { "type": "command", "command": ["openclaw", "agent", "run", "--session", "next-right-thing"], "promptVia": "stdin" }
+  ```
+- **`http`** — POSTs the prompt to a gateway endpoint; `{{prompt}}` is substituted into `body`.
+  ```json
+  "trigger": { "type": "http", "url": "http://127.0.0.1:PORT/agent/run", "body": { "session": "next-right-thing", "message": "{{prompt}}" } }
+  ```
+
+Target a **persistent session/channel** so context carries across ticks.
+
+## Run
+
+```bash
+# 1. See exactly what it would send, using your current state files — sends nothing:
+node heartbeat/nrt-heartbeat.mjs --once --dry-run
+
+# 2. Stub the trigger (point command at `cat` or a script) to watch ticks fire safely.
+
+# 3. Once the trigger is wired and dryRun:false, run the loop:
+node heartbeat/nrt-heartbeat.mjs           # loops on intervalSeconds
+node heartbeat/nrt-heartbeat.mjs --once    # single tick (for a timer/cron)
+```
+
+For always-on, install one of the templates in `install/` (systemd service **or** timer,
+or a launchd plist) — edit the paths first.
+
+## Safety
+
+- **Dry-run by default**, hard **daily cap**, **quiet hours**, and **idle when no goal** —
+  so an always-running agent can't surprise you or burn budget overnight.
+- Risky/destructive actions are still gated by the **plugin's approval prompt** on every
+  turn, and the finalize reflection still runs — this heartbeat only supplies the *drive*,
+  not a bypass of the guardrails.
+
+## Tests
+
+```bash
+node --test heartbeat/
+```
+Covers prompt composition from the three layers, comment stripping, quiet-hours/budget/idle
+gating, and the trigger adapters' request building.
+
+## Not in v1
+
+An `agent_end`-driven tick (the plugin signals "tick now" when a turn ends, instead of a
+fixed interval). Interval/timer is simpler and OS-supervised; the event-driven variant can
+come later.

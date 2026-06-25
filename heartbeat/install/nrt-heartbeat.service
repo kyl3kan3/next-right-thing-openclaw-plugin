@@ -1,0 +1,19 @@
+# systemd service — runs the heartbeat as a long-lived loop.
+# Install: copy to /etc/systemd/system/ (or ~/.config/systemd/user/), edit paths,
+# then: systemctl --user enable --now nrt-heartbeat.service
+#
+# Alternative: use the .timer to fire `--once` on a schedule instead of a loop.
+
+[Unit]
+Description=Next-Right-Thing Heartbeat (OpenClaw continuation engine)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/next-right-thing-openclaw-plugin/heartbeat
+ExecStart=/usr/bin/node /path/to/next-right-thing-openclaw-plugin/heartbeat/nrt-heartbeat.mjs
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

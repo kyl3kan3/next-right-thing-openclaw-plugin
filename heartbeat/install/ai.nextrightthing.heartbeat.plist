@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd agent. Edit paths, then:
+     cp ai.nextrightthing.heartbeat.plist ~/Library/LaunchAgents/
+     launchctl load ~/Library/LaunchAgents/ai.nextrightthing.heartbeat.plist
+     StartInterval fires `--once` on a schedule; the loop is internal otherwise. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.nextrightthing.heartbeat</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/path/to/next-right-thing-openclaw-plugin/heartbeat/nrt-heartbeat.mjs</string>
+    <string>--once</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/path/to/next-right-thing-openclaw-plugin/heartbeat</string>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

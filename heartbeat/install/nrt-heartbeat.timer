@@ -1,0 +1,17 @@
+# systemd timer — fires the heartbeat once per interval (OS does the scheduling).
+# Pair with a `Type=oneshot` service that runs `nrt-heartbeat.mjs --once`.
+# Install both, then: systemctl --user enable --now nrt-heartbeat.timer
+#
+# Note: with the timer approach, set ExecStart to run with `--once` and prefer
+# this over the long-lived .service if you want the OS to own scheduling/retries.
+
+[Unit]
+Description=Fire the Next-Right-Thing Heartbeat on a schedule
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -93,6 +93,14 @@ reflection for a turn but cannot re-enable it when it is globally off. If you al
 function (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
 precedence over the built-in reflection; the two use distinct idempotency keys.
 
+## Autonomous operation (optional)
+
+The plugin keeps each turn honest but does not *drive* the agent — OpenClaw acts only when
+prompted. For an agent that **keeps doing the next right thing on its own**, the optional
+[`heartbeat/`](heartbeat/README.md) companion periodically prompts your gateway from a layered
+goal model (mission + backlog + recent context), with this plugin gating risk on every turn it
+triggers. It ships idle and dry-run by default. See [`heartbeat/README.md`](heartbeat/README.md).
+
 ## Tests
 
 This repository is self-contained and dependency-free — no install step is
