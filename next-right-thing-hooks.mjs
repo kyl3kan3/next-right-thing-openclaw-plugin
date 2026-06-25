@@ -70,7 +70,7 @@ const DESTRUCTIVE_PATTERNS = [
   /\bRemove-Item\b.*\s-Recurse\b/i,
   /\bgit\b.*\breset\b.*\s--hard\b/i,
   /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
-  /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b)/i,
+  /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b|\s\+\S)/i,
   /\bcurl\b.*(?:\s-X\s*DELETE|\s--request[=\s]\s*DELETE)\b/i,
 ];
 
@@ -250,8 +250,11 @@ export function inferEffectsFromToolCall(event) {
   if (looksLikeExec) {
     // Scan the serialized params too, not just the command string: object-valued
     // input/script payloads collapse to "[object Object]" in commandText and would
-    // otherwise hide the real command from these patterns.
-    const execText = `${text}\n${allParamsText}`;
+    // otherwise hide the real command. Also scan a punctuation-normalized copy so
+    // structured argv (e.g. {cmd:"rm",args:["-rf","x"]}) reads as a spaced command
+    // string, since the destructive regexes expect whitespace before flags.
+    const spacedParams = allParamsText.replace(/[{}[\],:"]/g, " ");
+    const execText = `${text}\n${allParamsText}\n${spacedParams}`;
     if (anyPattern(PRODUCTION_PATTERNS, execText)) {
       effects.add("mutate_production");
     }

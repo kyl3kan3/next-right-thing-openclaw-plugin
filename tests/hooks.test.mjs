@@ -130,6 +130,28 @@ test("command patterns are scanned under non-exec shell tool names", () => {
   assert.ok(effects.includes("delete_data"));
 });
 
+test("structured argv arrays are flattened and scanned", () => {
+  const argvCalls = [
+    { toolName: "exec", params: { cmd: "rm", args: ["-rf", "/tmp/x"] }, effect: "delete_data" },
+    { toolName: "exec", params: { cmd: "git", args: ["reset", "--hard"] }, effect: "delete_data" },
+    { toolName: "exec", params: { cmd: "vercel", args: ["deploy", "--prod"] }, effect: "mutate_production" },
+  ];
+  for (const { toolName, params, effect } of argvCalls) {
+    assert.ok(
+      inferEffectsFromToolCall({ toolName, params }).includes(effect),
+      `expected ${effect} for argv ${JSON.stringify(params.args)}`,
+    );
+  }
+});
+
+test("plus-prefixed force-push refspecs are gated", () => {
+  for (const cmd of ["git push origin +main", "git push origin +feature:main"]) {
+    assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
+  }
+  // A normal (non-force) push should not trip the destructive gate.
+  assert.ok(!inferEffectsFromToolCall(exec("git push origin main")).includes("delete_data"));
+});
+
 test("nested object payloads under exec-like tools are still scanned", () => {
   const nested = [
     { toolName: "exec_command", params: { input: { command: "rm -rf /tmp/x" } }, effect: "delete_data" },
