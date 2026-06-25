@@ -14,6 +14,29 @@ export default createNextRightThingPlugin(definePluginEntry, {
         minimum: 0,
         description: "Approval timeout in milliseconds for guarded tool calls.",
       },
+      reflection: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: {
+            type: "boolean",
+            description: "Enable the built-in reflective deliberation on finalize (default true).",
+          },
+          reviewRoles: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["critic", "verifier", "security", "fact_checker", "memory_curator"],
+            },
+            description: "Extra review lenses to include in the contemplation.",
+          },
+          maxAttempts: {
+            type: "integer",
+            minimum: 1,
+            description: "How many times to ask the model to reflect before finalizing (default 1).",
+          },
+        },
+      },
     },
   },
   toolPolicy: {
