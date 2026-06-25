@@ -1,0 +1,12 @@
+{
+  "intervalSeconds": 1800,
+  "topBacklog": 5,
+  "dryRun": true,
+  "quietHours": { "start": 22, "end": 7 },
+  "maxTicksPerDay": 24,
+  "trigger": {
+    "type": "command",
+    "command": ["openclaw", "agent", "run", "--session", "next-right-thing"],
+    "promptVia": "stdin"
+  }
+}

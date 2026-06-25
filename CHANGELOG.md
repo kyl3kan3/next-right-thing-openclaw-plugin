@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Optional `heartbeat/` companion (Layer 3 "continuation engine").** A small,
+  dependency-free runner that periodically prompts the OpenClaw gateway with "what's
+  the next right thing right now? do it," composed from a layered goal model
+  (`mission.md` + `queue.json` + `context.md`). Pluggable trigger adapters (command/http),
+  safety knobs (dry-run default, daily cap, quiet hours, idle-when-no-goal), systemd/launchd
+  templates, and a `node --test` suite. It supplies the *drive* for an always-on agent while
+  the plugin keeps each triggered turn honest. Not part of the plugin's hook runtime.
+
 ## [0.3.0] - 2026-06-25
 
 ### Added
