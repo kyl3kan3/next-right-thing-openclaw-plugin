@@ -12,7 +12,7 @@ export default createNextRightThingPlugin(definePluginEntry, {
   // disable it here; extra review lenses are merged with the defaults (critic/verifier).
   reflection: {
     enabled: true,
-    reviewRoles: ["critic", "security"],
+    reviewRoles: ["security"], // merged with the built-in critic/verifier defaults
     maxAttempts: 1,
   },
   loadCompletionAudit: async () => {

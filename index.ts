@@ -20,6 +20,7 @@ export default createNextRightThingPlugin(definePluginEntry, {
         properties: {
           enabled: {
             type: "boolean",
+            default: true,
             description: "Enable the built-in reflective deliberation on finalize (default true).",
           },
           reviewRoles: {
@@ -33,6 +34,7 @@ export default createNextRightThingPlugin(definePluginEntry, {
           maxAttempts: {
             type: "integer",
             minimum: 1,
+            default: 1,
             description: "How many times to ask the model to reflect before finalizing (default 1).",
           },
         },

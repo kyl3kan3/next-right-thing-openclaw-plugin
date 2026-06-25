@@ -570,7 +570,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean" },
+              enabled: { type: "boolean", default: true },
               reviewRoles: {
                 type: "array",
                 items: {
@@ -578,7 +578,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
                   enum: ["critic", "verifier", "security", "fact_checker", "memory_curator"],
                 },
               },
-              maxAttempts: { type: "integer", minimum: 1 },
+              maxAttempts: { type: "integer", minimum: 1, default: 1 },
             },
           },
         },
@@ -593,9 +593,14 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       const pluginConfig = api?.pluginConfig ?? api?.config ?? {};
       const pluginConfigTimeout = normalizeNumber(pluginConfig.approvalTimeoutMs, undefined);
 
-      // Reflection config precedence: per-call (event.context.pluginConfig) > plugin-level
-      // (api.pluginConfig) > static options.reflection > built-in defaults. Build the
-      // static+plugin base here; fold in per-call config inside the handler.
+      // Reflection value precedence (reviewRoles, maxAttempts, per-turn enable/disable):
+      // per-call (event.context.pluginConfig) > plugin-level (api.pluginConfig) > static
+      // options.reflection > built-in defaults — resolved per-call in the handler below.
+      // Whether the finalize hook is REGISTERED at all is a startup decision from the
+      // static/plugin `enabled` flag (default true) or a wired audit loader: a per-call
+      // override can disable or tune reflection on a registered hook, but cannot register
+      // it when reflection is globally disabled. This keeps a deliberately-off plugin from
+      // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
       const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
 

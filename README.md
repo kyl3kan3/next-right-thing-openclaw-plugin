@@ -72,7 +72,9 @@ before it finalizes*. On the agent's first attempt to declare it is done, the
 
 It is a **one-shot** (`reflection.maxAttempts: 1` with a stable idempotency key), so it
 asks once and then lets finalize proceed — never an infinite loop. Set
-`reflection.enabled: false` to turn it off. If you also wire a `loadCompletionAudit`
+`reflection.enabled: false` (statically or at the plugin level) to turn it off; that is a
+startup decision, so a per-call `event.context.pluginConfig` override can disable or tune
+reflection for a turn but cannot re-enable it when it is globally off. If you also wire a `loadCompletionAudit`
 function (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
 precedence over the built-in reflection; the two use distinct idempotency keys.
 

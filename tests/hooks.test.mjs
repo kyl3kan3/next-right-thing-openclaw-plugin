@@ -321,7 +321,19 @@ test("reflection maxAttempts defaults to 1 and is configurable", () => {
 
 test("default configSchema exposes the reflection knob", () => {
   const entry = createNextRightThingPlugin((e) => e, {});
-  assert.ok(entry.configSchema.properties.reflection);
-  assert.ok(entry.configSchema.properties.reflection.properties.enabled);
-  assert.ok(entry.configSchema.properties.reflection.properties.reviewRoles);
+  const reflection = entry.configSchema.properties.reflection;
+  assert.ok(reflection);
+  assert.ok(reflection.properties.enabled);
+  assert.ok(reflection.properties.reviewRoles);
+  assert.ok(reflection.properties.maxAttempts);
+  // Documented defaults are encoded for schema consumers / config UIs.
+  assert.equal(reflection.properties.enabled.default, true);
+  assert.equal(reflection.properties.maxAttempts.default, 1);
+});
+
+test("globally-disabled reflection is not re-enabled by per-call config (no audit)", async () => {
+  // Registration is a startup decision: a globally-off plugin must not claim the
+  // before_agent_finalize (conversation-access) hook, so per-call config cannot
+  // resurrect it. Per-call config can still disable/tune a registered hook.
+  assert.equal(finalizeHandler({ reflection: { enabled: false } }), undefined);
 });
