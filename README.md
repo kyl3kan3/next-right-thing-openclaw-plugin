@@ -44,11 +44,20 @@ Config knobs are set under the plugin's entry in your OpenClaw config:
 | `reflection.maxAttempts` | integer ≥ 1 | `1` | How many times to ask the model to reflect before letting it finalize. |
 
 ```json
-{ "plugins": { "entries": { "next-right-thing": { "config": {
-  "approvalTimeoutMs": 60000,
-  "reflection": { "enabled": true, "reviewRoles": ["security"] }
-} } } } }
+{ "plugins": { "entries": { "next-right-thing": {
+  "hooks": { "allowConversationAccess": true },
+  "config": {
+    "approvalTimeoutMs": 60000,
+    "reflection": { "enabled": true, "reviewRoles": ["security"] }
+  }
+} } } }
 ```
+
+> **Required for the finalize reflection.** OpenClaw gates `before_agent_finalize`
+> behind a conversation-access permission, so a non-bundled plugin must set
+> `hooks.allowConversationAccess: true` on its entry (alongside `config`). Without
+> it the approval gate still works, but the reflection hook never runs. See
+> OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
 
 ## Reflective Deliberation
 
