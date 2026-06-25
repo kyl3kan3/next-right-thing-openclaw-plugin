@@ -5,8 +5,9 @@ The OpenClaw adapter uses plugin hooks rather than a new agent harness. OpenClaw
 The scaffold follows the native plugin split documented by OpenClaw:
 
 - `openclaw.plugin.json` is static metadata and config validation.
-- `package.json#openclaw.extensions` points OpenClaw at the runtime entrypoint.
-- `index.ts` exports the default `definePluginEntry` object.
+- `package.json#openclaw.extensions` points OpenClaw at the compiled JavaScript runtime entrypoint.
+- `index.js` exports the default `definePluginEntry` object for git/npm installs.
+- `index.ts` is kept as the TypeScript source equivalent for local development.
 - `next-right-thing-hooks.mjs` stays dependency-free so it can be unit-tested without OpenClaw installed.
 
 See OpenClaw's plugin manifest, entrypoint, and permission request docs:
@@ -18,7 +19,8 @@ See OpenClaw's plugin manifest, entrypoint, and permission request docs:
 ## Files
 
 - `next-right-thing-hooks.mjs`: dependency-free hook decision logic.
-- `index.ts`: package-ready OpenClaw plugin entry.
+- `index.js`: package-ready OpenClaw plugin entry.
+- `index.ts`: TypeScript source equivalent.
 - `plugin-entry.example.ts`: smaller example entry for embedding in another plugin.
 - `package.json`: OpenClaw extension metadata for package or checkout loading.
 - `openclaw.plugin.json`: native OpenClaw manifest with strict config schema.
@@ -54,13 +56,14 @@ For a package-ready plugin, keep these files in the same plugin root:
 
 ```text
 adapters/openclaw/
+  index.js
   index.ts
   next-right-thing-hooks.mjs
   openclaw.plugin.json
   package.json
 ```
 
-`index.ts`, `openclaw.plugin.json`, and `package.json#openclaw.extensions` must all use the same plugin id and entry path.
+`index.js`, `openclaw.plugin.json`, and `package.json#openclaw.extensions` must all use the same plugin id and entry path.
 
 ## Completion Audit
 
