@@ -29,11 +29,41 @@ Run: vercel deploy --prod
 
 Expected result: OpenClaw asks for approval instead of executing directly.
 
-## Local Validation
+## Configuration
 
-From the full Next Right Thing source tree:
+The plugin exposes one config knob, set under the plugin's entry in your
+OpenClaw config:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `approvalTimeoutMs` | integer (ms) | `60000` | How long to wait for an approval decision before denying. Times out to **deny** (fail-safe). |
+
+```json
+{ "plugins": { "entries": { "next-right-thing": { "config": { "approvalTimeoutMs": 60000 } } } } }
+```
+
+Out of the box only the `before_tool_call` approval gate is active. The
+`before_agent_finalize` completion-audit gate activates only when you wire a
+`loadCompletionAudit` function (see `plugin-entry.example.ts`), which depends on
+the Next Right Thing Python runtime.
+
+## Tests
+
+This repository is self-contained and dependency-free — no install step is
+needed to run the suite:
 
 ```bash
-node --test tests/test_openclaw_adapter.mjs
-python runtime/nrt_security_scan.py --path adapters/openclaw --fail-on high
+npm test        # or: node --test
 ```
+
+`tests/hooks.test.mjs` covers side-effect inference (destructive shell, SQL,
+production, publish, secrets), approval-prompt shape, severity, config
+threading, and the `fixtures/simulate-runtime.mjs` hook fixture.
+
+> The separate full Next Right Thing source tree additionally ships
+> `tests/test_openclaw_adapter.mjs` and `runtime/nrt_security_scan.py`; those
+> are out of scope for this adapter repository.
+
+## License
+
+[MIT](LICENSE)

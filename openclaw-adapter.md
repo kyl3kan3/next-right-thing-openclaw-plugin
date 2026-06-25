@@ -28,10 +28,16 @@ See OpenClaw's plugin manifest, entrypoint, and permission request docs:
 
 ## Hook Mapping
 
-- `before_tool_call`: infer side effects from the tool call and request approval for production mutation, destructive operations, publishing, messaging, auth changes, billing changes, or security exposure. Secret-shaped values in any tool params are treated as security exposure, not only shell commands.
-- `before_agent_finalize`: optionally load the supervisor completion audit and request one more model pass when completion is not proven.
-- `after_tool_call`: leave as observation-only unless the host routes tool results into `runtime/nrt_supervisor.py evidence`.
-- `agent_end`: leave as observation-only or use it to flush audit logs, call `nrt scheduler run-due`, or run `nrt reviews run` for deterministic review gates when native subagents were not used.
+The shipped entry (`index.js`) registers `before_tool_call`, and `before_agent_finalize` only when a `loadCompletionAudit` function is supplied. `after_tool_call` and `agent_end` are documented integration points but are **not** registered by the default entry.
+
+- `before_tool_call` (registered): infer side effects from the tool call and request approval for production mutation, destructive operations, publishing, messaging, auth changes, billing changes, or security exposure. Side-effect inference scans both the command string and the serialized tool params, so it catches:
+  - destructive shell commands (`rm -rf`/`-fr`, `git reset --hard`, `git clean --force`, `git push --force`/`+refspec`, `Remove-Item -Recurse`, `curl -X|--request DELETE`);
+  - destructive SQL (`DROP TABLE/DATABASE/SCHEMA`, `DELETE FROM`, `TRUNCATE`) on database- and exec-like tools (so MCP database tools that carry SQL in params are gated, while a tool merely mentioning SQL as text is not);
+  - commands hidden in object-valued `input`/`script` payloads or split into `args`/`argv` arrays;
+  - secret-shaped values in any tool params (not only shell commands).
+- `before_agent_finalize` (registered when `loadCompletionAudit` is provided): load the supervisor completion audit and request one more model pass when completion is not proven.
+- `after_tool_call` (not registered): wire as observation-only if the host routes tool results into `runtime/nrt_supervisor.py evidence`.
+- `agent_end` (not registered): wire to flush audit logs, call `nrt scheduler run-due`, or run `nrt reviews run` for deterministic review gates when native subagents were not used.
 
 Approval prompts are deliberately bounded for OpenClaw approval surfaces:
 
@@ -94,10 +100,10 @@ Use OpenClaw-native subagents when available. Use `nrt reviews run` when you nee
 The repository validates this adapter without requiring an OpenClaw install:
 
 ```bash
-node --test tests/test_openclaw_adapter.mjs
+npm test        # or: node --test
 ```
 
-That test covers side-effect inference, approval prompt shape, manifest/package metadata agreement, and the `fixtures/simulate-runtime.mjs` hook fixture. Run the OpenClaw CLI validator from your installed OpenClaw version as the final check when packaging it for a real OpenClaw setup.
+`tests/hooks.test.mjs` covers side-effect inference (destructive shell, SQL, production, publish, secrets), approval prompt shape, severity, config threading, the `moves_goal` block path, and the `fixtures/simulate-runtime.mjs` hook fixture. Run the OpenClaw CLI validator from your installed OpenClaw version as the final check when packaging it for a real OpenClaw setup.
 
 ## Why This Is Not a Harness
 
