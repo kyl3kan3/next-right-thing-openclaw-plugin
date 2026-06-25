@@ -21,6 +21,21 @@ export const HARD_EFFECTS = new Set([
   "security_exposure",
 ]);
 
+export const EXEC_TOOL_NAMES = new Set([
+  "exec",
+  "code_mode_exec",
+  "bash",
+  "shell",
+  "sh",
+  "zsh",
+  "powershell",
+  "pwsh",
+  "terminal",
+  "run",
+  "run_command",
+  "run_shell_command",
+]);
+
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
 
@@ -35,12 +50,12 @@ const PRODUCTION_PATTERNS = [
 
 const DESTRUCTIVE_PATTERNS = [
   /\brm\b.*\s-rf\b/i,
-  /\bRemove-Item\b.*\b-Recurse\b/i,
-  /\bgit\b.*\breset\b.*\b--hard\b/i,
-  /\bgit\b.*\bclean\b.*\b-f\b/i,
+  /\bRemove-Item\b.*\s-Recurse\b/i,
+  /\bgit\b.*\breset\b.*\s--hard\b/i,
+  /\bgit\b.*\bclean\b.*\s-[a-z]*f/i,
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bDELETE\s+FROM\b/i,
-  /\bcurl\b.*\b-X\s*DELETE\b/i,
+  /\bcurl\b.*\s-X\s*DELETE\b/i,
 ];
 
 const PUBLISH_PATTERNS = [
@@ -175,13 +190,21 @@ export function inferEffectsFromToolCall(event) {
   const toolName = String(event?.toolName ?? "");
   const toolKind = String(event?.toolKind ?? event?.ctx?.toolKind ?? "");
   const text = commandText(event);
+  const allParamsText = stringifyParams(event?.params);
   const effects = new Set();
 
-  if (anyPattern(SECRET_PATTERNS, text)) {
+  // Scan the whole params object, not just the command string, so a secret in
+  // headers/body/env alongside an innocuous command is still treated as exposure.
+  if (anyPattern(SECRET_PATTERNS, text) || anyPattern(SECRET_PATTERNS, allParamsText)) {
     effects.add("security_exposure");
   }
 
-  if (toolName === "exec" || toolKind.includes("exec") || toolKind === "code_mode_exec") {
+  const looksLikeExec =
+    EXEC_TOOL_NAMES.has(toolName) ||
+    toolKind.includes("exec") ||
+    /\b(?:bash|shell|terminal|exec|command)\b/i.test(toolName);
+
+  if (looksLikeExec) {
     if (anyPattern(PRODUCTION_PATTERNS, text)) {
       effects.add("mutate_production");
     }
@@ -212,8 +235,9 @@ export function inferEffectsFromToolCall(event) {
 export function buildToolCandidate(event, overrides = {}) {
   const inferredEffects = inferEffectsFromToolCall(event);
   const effects = normalizeEffects(overrides.effects ?? inferredEffects);
-  const risk = effects.length > 0 ? 4 : 1;
-  const irreversibility = effects.some((effect) => effect === "delete_data" || effect === "mutate_production") ? 4 : 1;
+  const highSeverity = effects.some((effect) => effect === "delete_data" || effect === "mutate_production");
+  const risk = highSeverity ? 5 : effects.length > 0 ? 4 : 1;
+  const irreversibility = highSeverity ? 4 : 1;
   const approvalRequired = effects.some((effect) => HARD_EFFECTS.has(effect));
   const candidate = {
     id: overrides.id ?? `${event?.toolCallId ?? event?.runId ?? event?.toolName ?? "tool"}-candidate`,
@@ -230,7 +254,7 @@ export function buildToolCandidate(event, overrides = {}) {
     uncertainty: overrides.uncertainty ?? 2,
     effects,
     approval_required: normalizeBoolean(overrides.approval_required, approvalRequired),
-    moves_goal: overrides.moves_goal ?? true,
+    moves_goal: normalizeBoolean(overrides.moves_goal, true),
     needs_fact_check: normalizeBoolean(overrides.needs_fact_check, false),
   };
   candidate.review_roles = mergeReviewRoles(defaultReviewRoles(candidate), normalizeReviewRoles(overrides.review_roles));
@@ -351,9 +375,22 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
         properties: {},
       },
     register(api) {
+      // Honor the user-facing `approvalTimeoutMs` config knob by threading it into
+      // the tool policy. Per-call config (event.config) wins over plugin config,
+      // which wins over the static toolPolicy default.
+      const baseToolPolicy = options.toolPolicy ?? {};
+      const pluginConfigTimeout = normalizeNumber(api?.config?.approvalTimeoutMs, undefined);
+
       api.on(
         "before_tool_call",
-        async (event) => beforeToolCallDecision(event, options.toolPolicy),
+        async (event) => {
+          const callConfigTimeout = normalizeNumber(event?.config?.approvalTimeoutMs, undefined);
+          const timeoutMs = [callConfigTimeout, pluginConfigTimeout, baseToolPolicy.timeoutMs].find((value) =>
+            Number.isFinite(value),
+          );
+          const toolPolicy = Number.isFinite(timeoutMs) ? { ...baseToolPolicy, timeoutMs } : baseToolPolicy;
+          return beforeToolCallDecision(event, toolPolicy);
+        },
         { priority: options.toolPriority ?? 75, timeoutMs: options.toolTimeoutMs ?? 5_000 },
       );
 
