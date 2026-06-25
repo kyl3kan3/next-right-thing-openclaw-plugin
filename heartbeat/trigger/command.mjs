@@ -1,8 +1,9 @@
 // Command trigger adapter — starts a gateway turn by running a CLI command.
 //
-// IMPORTANT: the exact OpenClaw command is install/version-specific. The example
-// config uses a PLACEHOLDER (`openclaw agent run …`); confirm the real subcommand
-// for your gateway (see heartbeat/README.md) before relying on it.
+// NOTE: the stock `openclaw` binary has NO command to submit a prompt, so the
+// OpenClaw-native trigger is the HTTP webhook ingress (see the `http` adapter and
+// heartbeat/README.md). This adapter is for hosts that DO expose such a CLI; its
+// command array is install-specific — verify it before relying on it.
 
 import { spawn } from "node:child_process";
 
