@@ -28,14 +28,14 @@ See OpenClaw's plugin manifest, entrypoint, and permission request docs:
 
 ## Hook Mapping
 
-The shipped entry (`index.js`) registers `before_tool_call`, and `before_agent_finalize` only when a `loadCompletionAudit` function is supplied. `after_tool_call` and `agent_end` are documented integration points but are **not** registered by the default entry.
+The shipped entry (`index.js`) registers `before_tool_call` and `before_agent_finalize` (the latter is on by default for built-in reflective deliberation). `after_tool_call` and `agent_end` are documented integration points but are **not** registered by the default entry.
 
 - `before_tool_call` (registered): infer side effects from the tool call and request approval for production mutation, destructive operations, publishing, messaging, auth changes, billing changes, or security exposure. Side-effect inference scans both the command string and the serialized tool params, so it catches:
   - destructive shell commands (`rm -rf`/`-fr`, `git reset --hard`, `git clean --force`, `git push --force`/`+refspec`, `Remove-Item -Recurse`, `curl -X|--request DELETE`);
   - destructive SQL (`DROP TABLE/DATABASE/SCHEMA`, `DELETE FROM`, `TRUNCATE`) on database- and exec-like tools (so MCP database tools that carry SQL in params are gated, while a tool merely mentioning SQL as text is not);
   - commands hidden in object-valued `input`/`script` payloads or split into `args`/`argv` arrays;
   - secret-shaped values in any tool params (not only shell commands).
-- `before_agent_finalize` (registered when `loadCompletionAudit` is provided): load the supervisor completion audit and request one more model pass when completion is not proven.
+- `before_agent_finalize` (registered by default; **requires** `hooks.allowConversationAccess: true` on the plugin entry, since OpenClaw gates this hook behind conversation access): impose deliberation before the agent finalizes. With **no** external runtime, built-in *reflective deliberation* returns one `revise` asking the model to restate the goal, prove it is actually done, name the next right thing if not, and self-review through the configured review lenses — a one-shot guarded by `reflection.maxAttempts` (default 1) and a stable idempotency key. When `loadCompletionAudit` is also supplied, an evidence-based audit `revise` is checked first and takes precedence; the audit and reflection paths use **distinct** idempotency keys (`next-right-thing-completion-audit` vs `next-right-thing-reflection`) so the host never conflates them. Disable via `reflection.enabled: false`.
 - `after_tool_call` (not registered): wire as observation-only if the host routes tool results into `runtime/nrt_supervisor.py evidence`.
 - `agent_end` (not registered): wire to flush audit logs, call `nrt scheduler run-due`, or run `nrt reviews run` for deterministic review gates when native subagents were not used.
 
@@ -79,7 +79,7 @@ Wire `loadCompletionAudit` to the Python supervisor:
 python runtime/nrt_supervisor.py audit --state .nrt/openclaw-session.json
 ```
 
-If the audit returns `status: "incomplete"`, the adapter emits a `before_agent_finalize` revise decision that tells the model what evidence is still missing.
+If the audit returns `status: "incomplete"`, the adapter emits a `before_agent_finalize` revise decision that tells the model what evidence is still missing. This composes with the built-in reflection: the audit is checked first and an audit `revise` wins; if the audit is complete (or no loader is wired), the built-in reflective deliberation runs instead. The two never double-revise on the same attempt and carry distinct idempotency keys.
 
 ## Runtime Sidecar Commands
 

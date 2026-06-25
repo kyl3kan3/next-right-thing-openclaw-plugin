@@ -34,21 +34,49 @@ Expected result: OpenClaw asks for approval instead of executing directly.
 
 ## Configuration
 
-The plugin exposes one config knob, set under the plugin's entry in your
-OpenClaw config:
+Config knobs are set under the plugin's entry in your OpenClaw config:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `approvalTimeoutMs` | integer (ms) | `60000` | How long to wait for an approval decision before denying. Times out to **deny** (fail-safe). |
+| `reflection.enabled` | boolean | `true` | Master switch for the built-in reflective deliberation (below). |
+| `reflection.reviewRoles` | string[] | `[]` | Extra review lenses to include — any of `critic`, `verifier`, `security`, `fact_checker`, `memory_curator`. |
+| `reflection.maxAttempts` | integer ≥ 1 | `1` | How many times to ask the model to reflect before letting it finalize. |
 
 ```json
-{ "plugins": { "entries": { "next-right-thing": { "config": { "approvalTimeoutMs": 60000 } } } } }
+{ "plugins": { "entries": { "next-right-thing": {
+  "hooks": { "allowConversationAccess": true },
+  "config": {
+    "approvalTimeoutMs": 60000,
+    "reflection": { "enabled": true, "reviewRoles": ["security"] }
+  }
+} } } }
 ```
 
-Out of the box only the `before_tool_call` approval gate is active. The
-`before_agent_finalize` completion-audit gate activates only when you wire a
-`loadCompletionAudit` function (see `plugin-entry.example.ts`), which depends on
-the Next Right Thing Python runtime.
+> **Required for the finalize reflection.** OpenClaw gates `before_agent_finalize`
+> behind a conversation-access permission, so a non-bundled plugin must set
+> `hooks.allowConversationAccess: true` on its entry (alongside `config`). Without
+> it the approval gate still works, but the reflection hook never runs. See
+> OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
+
+## Reflective Deliberation
+
+By default — with **no** external runtime — the plugin makes the agent *contemplate
+before it finalizes*. On the agent's first attempt to declare it is done, the
+`before_agent_finalize` hook returns one `revise` that asks the model to:
+
+1. restate the active goal in one sentence,
+2. state the concrete evidence that it is actually done,
+3. if it is not fully done, name at least one **next right thing** and do it, and
+4. self-review through the configured review lenses (`critic`, `verifier`, …).
+
+It is a **one-shot** (`reflection.maxAttempts: 1` with a stable idempotency key), so it
+asks once and then lets finalize proceed — never an infinite loop. Set
+`reflection.enabled: false` (statically or at the plugin level) to turn it off; that is a
+startup decision, so a per-call `event.context.pluginConfig` override can disable or tune
+reflection for a turn but cannot re-enable it when it is globally off. If you also wire a `loadCompletionAudit`
+function (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
+precedence over the built-in reflection; the two use distinct idempotency keys.
 
 ## Tests
 

@@ -5,10 +5,23 @@ import {
   inferEffectsFromToolCall,
   buildToolCandidate,
   beforeToolCallDecision,
+  reflectiveFinalizeDecision,
   createNextRightThingPlugin,
 } from "../next-right-thing-hooks.mjs";
 
 const exec = (cmd) => ({ toolName: "exec", params: { cmd } });
+
+const REFLECTION_KEY = "next-right-thing-reflection";
+const AUDIT_KEY = "next-right-thing-completion-audit";
+
+// Register a plugin and return its `before_agent_finalize` handler entry (or undefined
+// if the hook was not registered). `api` may carry pluginConfig.
+function finalizeHandler(options = {}, api = {}) {
+  const registered = [];
+  const plugin = createNextRightThingPlugin((entry) => entry, options);
+  plugin.register({ on(name, handler) { registered.push({ name, handler }); }, ...api });
+  return registered.find((r) => r.name === "before_agent_finalize");
+}
 
 test("destructive commands infer delete_data (regex word-boundary regression)", () => {
   // These four slipped through before: \b before a dash-prefixed flag never matches.
@@ -239,4 +252,88 @@ test("approvalTimeoutMs config is threaded into the approval prompt", async () =
     context: { pluginConfig: { approvalTimeoutMs: 23_456 } },
   });
   assert.equal(perCall.requireApproval.timeoutMs, 23_456);
+});
+
+test("reflective deliberation is registered and revises on finalize by default", async () => {
+  const handler = finalizeHandler(); // no loadCompletionAudit, no reflection config
+  assert.ok(handler, "before_agent_finalize should be registered by default");
+  const decision = await handler.handler({});
+  assert.equal(decision.action, "revise");
+  assert.equal(decision.retry.maxAttempts, 1);
+  assert.equal(decision.retry.idempotencyKey, REFLECTION_KEY);
+  assert.notEqual(decision.retry.idempotencyKey, AUDIT_KEY);
+});
+
+test("reflection instruction names the review lenses in priority order", async () => {
+  const handler = finalizeHandler({}, { pluginConfig: { reflection: { reviewRoles: ["security"] } } });
+  const { instruction } = (await handler.handler({})).retry;
+  for (const lens of ["critic", "security", "verifier"]) {
+    assert.ok(instruction.includes(lens), `instruction should mention ${lens}`);
+  }
+  assert.ok(instruction.indexOf("critic") < instruction.indexOf("security"));
+  assert.ok(instruction.indexOf("security") < instruction.indexOf("verifier"));
+});
+
+test("reflection disabled statically skips finalize registration when no audit", () => {
+  assert.equal(finalizeHandler({ reflection: { enabled: false } }), undefined);
+  assert.equal(finalizeHandler({}, { pluginConfig: { reflection: { enabled: false } } }), undefined);
+});
+
+test("reflection disabled per-call allows finalize (returns undefined)", async () => {
+  const handler = finalizeHandler(); // enabled by default -> hook registered
+  assert.ok(handler);
+  const decision = await handler.handler({ context: { pluginConfig: { reflection: { enabled: false } } } });
+  assert.equal(decision, undefined);
+});
+
+test("per-call reflection config overrides plugin-level", async () => {
+  const handler = finalizeHandler({}, { pluginConfig: { reflection: { maxAttempts: 1 } } });
+  const decision = await handler.handler({ context: { pluginConfig: { reflection: { maxAttempts: 3 } } } });
+  assert.equal(decision.retry.maxAttempts, 3);
+});
+
+test("loadCompletionAudit composes ahead of reflection (audit wins, distinct keys)", async () => {
+  const incomplete = finalizeHandler({
+    loadCompletionAudit: async () => ({
+      status: "incomplete",
+      requirements: [{ requirement: "production proof", status: "missing" }],
+    }),
+  });
+  const d1 = await incomplete.handler({});
+  assert.equal(d1.action, "revise");
+  assert.equal(d1.retry.idempotencyKey, AUDIT_KEY);
+
+  // A complete audit falls through to the built-in reflection.
+  const complete = finalizeHandler({ loadCompletionAudit: async () => ({ status: "complete" }) });
+  const d2 = await complete.handler({});
+  assert.equal(d2.action, "revise");
+  assert.equal(d2.retry.idempotencyKey, REFLECTION_KEY);
+});
+
+test("reflectiveFinalizeDecision rejects unknown review roles", () => {
+  assert.throws(() => reflectiveFinalizeDecision({}, { reviewRoles: ["bogus"] }), TypeError);
+});
+
+test("reflection maxAttempts defaults to 1 and is configurable", () => {
+  assert.equal(reflectiveFinalizeDecision({}, {}).retry.maxAttempts, 1);
+  assert.equal(reflectiveFinalizeDecision({}, { maxAttempts: 2 }).retry.maxAttempts, 2);
+});
+
+test("default configSchema exposes the reflection knob", () => {
+  const entry = createNextRightThingPlugin((e) => e, {});
+  const reflection = entry.configSchema.properties.reflection;
+  assert.ok(reflection);
+  assert.ok(reflection.properties.enabled);
+  assert.ok(reflection.properties.reviewRoles);
+  assert.ok(reflection.properties.maxAttempts);
+  // Documented defaults are encoded for schema consumers / config UIs.
+  assert.equal(reflection.properties.enabled.default, true);
+  assert.equal(reflection.properties.maxAttempts.default, 1);
+});
+
+test("globally-disabled reflection is not re-enabled by per-call config (no audit)", async () => {
+  // Registration is a startup decision: a globally-off plugin must not claim the
+  // before_agent_finalize (conversation-access) hook, so per-call config cannot
+  // resurrect it. Per-call config can still disable/tune a registered hook.
+  assert.equal(finalizeHandler({ reflection: { enabled: false } }), undefined);
 });

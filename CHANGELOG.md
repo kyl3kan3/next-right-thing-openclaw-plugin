@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-06-25
+
+### Added
+
+- **Built-in reflective deliberation (on by default, no runtime required).** The
+  `before_agent_finalize` hook is now registered by default. On the agent's first
+  finalize attempt it returns one `revise` that makes the model restate the active
+  goal, prove it is actually done, name the next right thing if it is not, and
+  self-review through the configured review lenses. This finally wires up the
+  previously dormant `review_roles` framework.
+- New config: `reflection.enabled` (default `true`), `reflection.reviewRoles`
+  (extra lenses, merged with the `critic`/`verifier` defaults), and
+  `reflection.maxAttempts` (default `1`). Added to all four `configSchema` copies.
+
+### Changed
+
+- A user-supplied `loadCompletionAudit` now **composes ahead of** the built-in
+  reflection: an evidence-based audit `revise` wins, otherwise reflection runs. The
+  two paths use distinct idempotency keys (`next-right-thing-completion-audit` vs
+  `next-right-thing-reflection`) and never double-revise on the same attempt.
+
+### Notes
+
+- The reflection is a **one-shot** (`maxAttempts: 1` + stable idempotency key), so it
+  costs exactly one extra pass and cannot loop. Set `reflection.enabled: false` to
+  disable. If the host ignores `revise` on finalize, behavior degrades to the prior
+  status quo (finalize proceeds).
+
 ## [0.2.2] - 2026-06-25
 
 ### Fixed (approval-gate bypasses)

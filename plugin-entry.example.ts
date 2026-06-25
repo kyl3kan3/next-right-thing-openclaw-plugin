@@ -8,6 +8,13 @@ export default createNextRightThingPlugin(definePluginEntry, {
     timeoutMs: 60_000,
     timeoutBehavior: "deny",
   },
+  // Built-in reflective deliberation runs by default (no runtime needed). Tune or
+  // disable it here; extra review lenses are merged with the defaults (critic/verifier).
+  reflection: {
+    enabled: true,
+    reviewRoles: ["security"], // merged with the built-in critic/verifier defaults
+    maxAttempts: 1,
+  },
   loadCompletionAudit: async () => {
     // Replace with a call to runtime/nrt_supervisor.py audit --state <session-state>.
     // Return the parsed audit JSON. When status !== "complete", the adapter asks

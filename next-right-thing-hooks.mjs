@@ -1,5 +1,9 @@
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
 const MAX_APPROVAL_DESCRIPTION_LENGTH = 256;
+const MAX_REFLECTION_INSTRUCTION_LENGTH = 1024;
+// Distinct from the completion-audit key so the host never conflates the two
+// `before_agent_finalize` revise paths (audit vs built-in reflection).
+const REFLECTION_IDEMPOTENCY_KEY = "next-right-thing-reflection";
 
 export const HARD_EFFECTS = new Set([
   "spend_money",
@@ -92,6 +96,16 @@ export const DB_TOOL_KEYWORDS = new Set([
 
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
+
+// One short self-review directive per review lens, used to compose the reflective
+// finalize instruction so the agent's contemplation is multi-perspective.
+export const REVIEW_ROLE_PROMPTS = {
+  critic: "challenge whether this is really the next right thing, or just the first thing",
+  security: "re-examine any auth, permission, secret, or data-exposure risk you introduced",
+  fact_checker: "verify each claim you are about to make against the evidence you gathered",
+  verifier: "confirm the stated done-criteria are demonstrably met, not just plausible",
+  memory_curator: "note what should be recorded or remembered for next time",
+};
 
 const PRODUCTION_PATTERNS = [
   /\bvercel\b.*(?:^|\s)--prod\b/i,
@@ -484,12 +498,55 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
 }
 
 /**
+ * Built-in reflective deliberation for `before_agent_finalize`. Unlike
+ * {@link finalizeDecisionFromAudit} (which needs an external audit), this runs with
+ * no dependencies: on the agent's finalize attempt it returns one `revise` that makes
+ * the model restate its goal, prove the work is actually done, name the next right
+ * thing if not, and self-review through the configured review lenses. A stable
+ * idempotency key plus `maxAttempts` (default 1) make it a one-shot, so it asks once
+ * and then lets finalize proceed — never an infinite loop.
+ *
+ * @param {object} event - The `before_agent_finalize` event (unused today; kept for parity).
+ * @param {object} [options] - { enabled, reviewRoles, instruction, idempotencyKey, maxAttempts }.
+ * @returns {object|undefined} A revise decision, or `undefined` to allow finalize.
+ */
+export function reflectiveFinalizeDecision(event, options = {}) {
+  if (!normalizeBoolean(options.enabled, true)) {
+    return undefined;
+  }
+
+  const lenses = mergeReviewRoles(["critic", "verifier"], normalizeReviewRoles(options.reviewRoles));
+  const lensText = lenses.map((role) => `${role} (${REVIEW_ROLE_PROMPTS[role]})`).join("; ");
+
+  const instruction =
+    options.instruction ??
+    [
+      "Before you finalize, do not claim completion yet. In your next turn:",
+      "(1) restate the active goal in one sentence;",
+      "(2) state the concrete evidence that it is actually done;",
+      "(3) if it is not fully done, name at least one next right thing and do it;",
+      `(4) self-review through these lenses — ${lensText}.`,
+      "Then either finalize with that evidence, or take the next action.",
+    ].join(" ");
+
+  return {
+    action: "revise",
+    reason: "Pause before finalizing: confirm this is the next right thing.",
+    retry: {
+      instruction: boundedText(redactSecrets(instruction), MAX_REFLECTION_INSTRUCTION_LENGTH),
+      idempotencyKey: options.idempotencyKey ?? REFLECTION_IDEMPOTENCY_KEY,
+      maxAttempts: normalizeNumber(options.maxAttempts, 1),
+    },
+  };
+}
+
+/**
  * Create the OpenClaw plugin entry, registering the `before_tool_call` approval
- * gate and (when `loadCompletionAudit` is supplied) the `before_agent_finalize`
- * completion-audit gate.
+ * gate and the `before_agent_finalize` deliberation gate (built-in reflection by
+ * default, composing ahead of any supplied `loadCompletionAudit`).
  *
  * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
- * @param {object} [options] - Plugin metadata, tool/finalize policy, and audit loader.
+ * @param {object} [options] - Plugin metadata, tool/finalize policy, reflection, and audit loader.
  * @returns {object} The plugin entry produced by `definePluginEntry`.
  */
 export function createNextRightThingPlugin(definePluginEntry, options = {}) {
@@ -509,6 +566,21 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
         additionalProperties: false,
         properties: {
           approvalTimeoutMs: { type: "integer", minimum: 0 },
+          reflection: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enabled: { type: "boolean", default: true },
+              reviewRoles: {
+                type: "array",
+                items: {
+                  type: "string",
+                  enum: ["critic", "verifier", "security", "fact_checker", "memory_curator"],
+                },
+              },
+              maxAttempts: { type: "integer", minimum: 1, default: 1 },
+            },
+          },
         },
       },
     register(api) {
@@ -520,6 +592,17 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       const baseToolPolicy = options.toolPolicy ?? {};
       const pluginConfig = api?.pluginConfig ?? api?.config ?? {};
       const pluginConfigTimeout = normalizeNumber(pluginConfig.approvalTimeoutMs, undefined);
+
+      // Reflection value precedence (reviewRoles, maxAttempts, per-turn enable/disable):
+      // per-call (event.context.pluginConfig) > plugin-level (api.pluginConfig) > static
+      // options.reflection > built-in defaults — resolved per-call in the handler below.
+      // Whether the finalize hook is REGISTERED at all is a startup decision from the
+      // static/plugin `enabled` flag (default true) or a wired audit loader: a per-call
+      // override can disable or tune reflection on a registered hook, but cannot register
+      // it when reflection is globally disabled. This keeps a deliberately-off plugin from
+      // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
+      const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
+      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
 
       api.on(
         "before_tool_call",
@@ -535,12 +618,24 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
         { priority: options.toolPriority ?? 75, timeoutMs: options.toolTimeoutMs ?? 5_000 },
       );
 
-      if (typeof options.loadCompletionAudit === "function") {
+      // Register the finalize gate when an external audit is wired OR built-in
+      // reflection is enabled (the default). The handler composes them: a real audit
+      // revise outranks reflection, and the two use distinct idempotency keys so the
+      // host never double-revises.
+      if (typeof options.loadCompletionAudit === "function" || reflectionEnabled) {
         api.on(
           "before_agent_finalize",
           async (event) => {
-            const audit = await options.loadCompletionAudit(event);
-            return finalizeDecisionFromAudit(audit, options.finalizePolicy);
+            if (typeof options.loadCompletionAudit === "function") {
+              const audit = await options.loadCompletionAudit(event);
+              const auditDecision = finalizeDecisionFromAudit(audit, options.finalizePolicy);
+              if (auditDecision) {
+                return auditDecision;
+              }
+            }
+            const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
+            const reflectionOptions = { ...baseReflection, ...(callConfig.reflection ?? {}) };
+            return reflectiveFinalizeDecision(event, reflectionOptions);
           },
           { priority: options.finalizePriority ?? 50, timeoutMs: options.finalizeTimeoutMs ?? 5_000 },
         );
