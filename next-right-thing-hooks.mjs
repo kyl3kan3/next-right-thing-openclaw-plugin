@@ -148,7 +148,9 @@ const SECRET_PATTERNS = [
   /\bAWS_ACCESS_KEY_ID\b/i,
   /\bGITHUB_TOKEN\b/i,
   /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}\b/i,
-  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/i,
+  /\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+  /\bnpm_[A-Za-z0-9]{36}\b/,
+  /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i,
   /\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b/,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/i,
   /\bAIza[0-9A-Za-z_-]{35}\b/,
@@ -278,6 +280,11 @@ export function inferEffectsFromToolCall(event) {
   const toolKind = String(event?.toolKind ?? event?.ctx?.toolKind ?? "");
   const text = commandText(event);
   const allParamsText = stringifyParams(event?.params);
+  // Normalize JSON punctuation AND escaped whitespace (\n, \t, \r) to spaces, so a
+  // command/SQL split across keys or an argv array, or carried as a multiline string,
+  // still reads as spaced text the patterns can match.
+  const normalizedParams = allParamsText.replace(/\\[ntr]/g, " ").replace(/[{}[\],:"]/g, " ");
+  const lowerToolName = toolName.toLowerCase();
   const effects = new Set();
 
   // Scan the whole params object, not just the command string, so a secret in
@@ -286,7 +293,13 @@ export function inferEffectsFromToolCall(event) {
     effects.add("security_exposure");
   }
 
-  const toolNameTokens = toolName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  // Split on non-alphanumerics AND camelCase boundaries so exec_command, runCommand,
+  // and functions.execCommand all tokenize to recognizable keywords.
+  const toolNameTokens = toolName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
   const looksLikeExec =
     EXEC_TOOL_NAMES.has(toolName) ||
     toolKind.includes("exec") ||
@@ -298,21 +311,23 @@ export function inferEffectsFromToolCall(event) {
 
   // Destructive SQL is gated for database/query tools (which carry it in params) and
   // for exec runners, but not for arbitrary tools that only carry SQL as text — that
-  // would false-fire on, e.g., a web search about "DELETE FROM".
+  // would false-fire on, e.g., a web search about "DELETE FROM". The normalized copy
+  // catches SQL split across argv elements or carried as a multiline string.
   if (looksLikeExec || looksLikeDatabase) {
-    if (anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) || anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText)) {
+    if (
+      anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) ||
+      anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText) ||
+      anyPattern(SQL_DESTRUCTIVE_PATTERNS, normalizedParams)
+    ) {
       effects.add("delete_data");
     }
   }
 
   if (looksLikeExec) {
-    // Scan the serialized params too, not just the command string: object-valued
-    // input/script payloads collapse to "[object Object]" in commandText and would
-    // otherwise hide the real command. Also scan a punctuation-normalized copy so
-    // structured argv (e.g. {cmd:"rm",args:["-rf","x"]}) reads as a spaced command
-    // string, since the destructive regexes expect whitespace before flags.
-    const spacedParams = allParamsText.replace(/[{}[\],:"]/g, " ");
-    const execText = `${text}\n${allParamsText}\n${spacedParams}`;
+    // Scan the command string, the serialized params (object-valued input/script
+    // payloads collapse to "[object Object]" in commandText), and the normalized copy
+    // (so structured argv like {cmd:"rm",args:["-rf","x"]} reads as a spaced command).
+    const execText = `${text}\n${allParamsText}\n${normalizedParams}`;
     if (anyPattern(PRODUCTION_PATTERNS, execText)) {
       effects.add("mutate_production");
     }
@@ -324,16 +339,18 @@ export function inferEffectsFromToolCall(event) {
     }
   }
 
-  if (toolName.includes("email") || toolName.includes("gmail") || toolName.includes("outlook")) {
+  // Name-based effect inference matches the LOWERCASED tool name, so the dominant MCP
+  // convention (mcp__Gmail__, mcp__Slack__, mcp__Stripe__) is covered, not just lowercase.
+  if (lowerToolName.includes("email") || lowerToolName.includes("gmail") || lowerToolName.includes("outlook")) {
     effects.add("send_message");
   }
-  if (toolName.includes("slack") || toolName.includes("discord") || toolName.includes("telegram")) {
+  if (lowerToolName.includes("slack") || lowerToolName.includes("discord") || lowerToolName.includes("telegram")) {
     effects.add("send_message");
   }
-  if (toolName.includes("billing") || toolName.includes("stripe")) {
+  if (lowerToolName.includes("billing") || lowerToolName.includes("stripe")) {
     effects.add("financial_exposure");
   }
-  if (toolName.includes("deploy")) {
+  if (lowerToolName.includes("deploy")) {
     effects.add("mutate_production");
   }
 

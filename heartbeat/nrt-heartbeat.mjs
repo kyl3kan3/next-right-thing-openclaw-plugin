@@ -86,7 +86,7 @@ export function shouldRunNow(config, state, now, ticksToday = 0) {
   if (!mission && openItems(state?.queue).length === 0) {
     return { run: false, reason: "idle: no mission and empty backlog" };
   }
-  const cap = config?.maxTicksPerDay;
+  const cap = Number(config?.maxTicksPerDay);
   if (Number.isFinite(cap) && ticksToday >= cap) {
     return { run: false, reason: `daily budget reached (${ticksToday}/${cap})` };
   }

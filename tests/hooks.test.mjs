@@ -337,3 +337,49 @@ test("globally-disabled reflection is not re-enabled by per-call config (no audi
   // resurrect it. Per-call config can still disable/tune a registered hook.
   assert.equal(finalizeHandler({ reflection: { enabled: false } }), undefined);
 });
+
+// --- Adversarial-test regressions (found by the adversarial workflow) ---
+
+test("B1: capitalized MCP tool names infer messaging/financial effects", () => {
+  assert.ok(inferEffectsFromToolCall({ toolName: "mcp__Gmail__send_email", params: {} }).includes("send_message"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "mcp__Slack__post_message", params: {} }).includes("send_message"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "mcp__Stripe__create_charge", params: {} }).includes("financial_exposure"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "DeployService", params: {} }).includes("mutate_production"));
+});
+
+test("B2: multiline/whitespace SQL on a DB tool is gated", () => {
+  for (const sql of ["DROP\nTABLE users", "DELETE\tFROM accounts", "DROP   TABLE x"]) {
+    assert.ok(
+      inferEffectsFromToolCall({ toolName: "postgres_query", params: { query: sql } }).includes("delete_data"),
+      `expected delete_data for: ${JSON.stringify(sql)}`,
+    );
+  }
+});
+
+test("B3: GitHub fine-grained PAT, Stripe and npm secrets are detected", () => {
+  const secrets = [
+    "github_pat_" + "A".repeat(22),
+    "sk_live_" + "A".repeat(24),
+    "npm_" + "A".repeat(36),
+  ];
+  for (const s of secrets) {
+    assert.ok(
+      inferEffectsFromToolCall(exec(`echo ${s}`)).includes("security_exposure"),
+      `expected security_exposure for: ${s.slice(0, 10)}…`,
+    );
+  }
+});
+
+test("B4: camelCase exec tool names are recognized", () => {
+  for (const toolName of ["runCommand", "execCommand", "shellExec"]) {
+    assert.ok(
+      inferEffectsFromToolCall({ toolName, params: { cmd: "rm -rf build" } }).includes("delete_data"),
+      `expected delete_data for camelCase tool: ${toolName}`,
+    );
+  }
+});
+
+test("B5: destructive SQL split across argv elements is gated", () => {
+  assert.ok(inferEffectsFromToolCall({ toolName: "exec", params: { args: ["DELETE", "FROM", "users"] } }).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "postgres_query", params: { args: ["DROP", "TABLE", "x"] } }).includes("delete_data"));
+});
