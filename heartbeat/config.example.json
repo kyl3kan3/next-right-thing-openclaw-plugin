@@ -5,8 +5,9 @@
   "quietHours": { "start": 22, "end": 7 },
   "maxTicksPerDay": 24,
   "trigger": {
-    "type": "command",
-    "command": ["openclaw", "agent", "run", "--session", "next-right-thing"],
-    "promptVia": "stdin"
+    "type": "http",
+    "url": "http://127.0.0.1:18789/hooks/heartbeat",
+    "headers": { "Authorization": "Bearer REPLACE_WITH_YOUR_hooks.token" },
+    "body": { "prompt": "{{prompt}}" }
   }
 }

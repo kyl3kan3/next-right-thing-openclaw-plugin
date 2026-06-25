@@ -36,23 +36,51 @@ Copy `config.example.json` to `config.json` and edit:
 | `maxTicksPerDay` | Hard daily cap so it can't run away or rack up cost. |
 | `trigger` | How to start a gateway turn — see below. |
 
-## ⚠️ Wire the trigger to your gateway (the one install-specific step)
+## Wire the trigger to your gateway (the one install-specific step)
 
-The heartbeat must call **your** OpenClaw gateway to start a turn, and that call is
-version-specific. The example config uses a **placeholder** (`openclaw agent run …`) —
-confirm the real one with `openclaw --help`, the Control UI, or your gateway's API docs.
-Two adapters are provided:
+OpenClaw has **no CLI command** to submit a prompt — its gateway accepts external work through
+an authenticated **HTTP webhook ingress** (the gateway `hooks` block). That's a plain POST, which
+the `http` trigger adapter already speaks, so wiring is two small config blocks and no code.
 
-- **`command`** — runs a CLI command; the prompt is piped to stdin (or appended as an arg).
-  ```json
-  "trigger": { "type": "command", "command": ["openclaw", "agent", "run", "--session", "next-right-thing"], "promptVia": "stdin" }
-  ```
-- **`http`** — POSTs the prompt to a gateway endpoint; `{{prompt}}` is substituted into `body`.
-  ```json
-  "trigger": { "type": "http", "url": "http://127.0.0.1:PORT/agent/run", "body": { "session": "next-right-thing", "message": "{{prompt}}" } }
-  ```
+**1. Gateway side** — enable the webhook ingress in your OpenClaw gateway config and add a mapping
+that routes to an agent run (confirm exact field names against your version):
 
-Target a **persistent session/channel** so context carries across ticks.
+```json5
+{
+  hooks: {
+    enabled: true,
+    token: "a-long-random-shared-secret",
+    path: "/hooks",
+    mappings: [
+      { match: { path: "heartbeat" }, action: "agent", agentId: "main", deliver: true }
+    ]
+  }
+}
+```
+
+This exposes `http://<gateway-host>:<gateway.port>/hooks/heartbeat` (default port **18789**),
+authenticated with `Authorization: Bearer <token>`.
+
+**2. Heartbeat side** — point the `http` trigger at it (this is the default in `config.example.json`):
+
+```json
+"trigger": {
+  "type": "http",
+  "url": "http://127.0.0.1:18789/hooks/heartbeat",
+  "headers": { "Authorization": "Bearer a-long-random-shared-secret" },
+  "body": { "prompt": "{{prompt}}" }
+}
+```
+
+Set the bearer token to your gateway's `hooks.token`. **Verify on your version:** the gateway
+`gateway.port`, and **how the POST body maps to the agent's message** — the docs don't fully pin
+down whether the prompt should be a `prompt`/`text`/`message` field or the raw body, so adjust the
+`body` template (and `{{prompt}}` placement) to match. Target a stable mapping/agent so context
+carries across ticks.
+
+> **Alternative — `command` adapter.** If your host *does* expose a CLI that submits a prompt, use
+> `{ "type": "command", "command": ["your-cli", "..."], "promptVia": "stdin" }` instead. The stock
+> `openclaw` binary does not, so the webhook above is the OpenClaw-native path.
 
 ## Run
 
