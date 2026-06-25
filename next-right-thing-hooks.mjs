@@ -21,6 +21,75 @@ export const HARD_EFFECTS = new Set([
   "security_exposure",
 ]);
 
+export const EXEC_TOOL_NAMES = new Set([
+  "exec",
+  "code_mode_exec",
+  "bash",
+  "shell",
+  "sh",
+  "zsh",
+  "powershell",
+  "pwsh",
+  "terminal",
+  "run",
+  "run_command",
+  "run_shell_command",
+]);
+
+// Single-word tokens that mark a tool name as an exec/shell runner. Matched against
+// the name split on any non-alphanumeric separator, so underscored and namespaced
+// names (exec_command, shell_command, functions.exec_command) are recognized too.
+export const EXEC_TOOL_KEYWORDS = new Set([
+  "exec",
+  "bash",
+  "shell",
+  "sh",
+  "zsh",
+  "powershell",
+  "pwsh",
+  "terminal",
+  "cmd",
+  "command",
+  "run",
+]);
+
+// Single-word tokens that mark a tool as a database/query tool, so destructive SQL
+// is gated for them (and for exec runners) without false-firing on arbitrary tools
+// that merely carry SQL as text (e.g. a web search about "DELETE FROM"). Deliberately
+// excludes generic tokens like "query" that appear in non-DB tool names (search_query).
+export const DB_TOOL_KEYWORDS = new Set([
+  "sql",
+  "db",
+  "database",
+  "databases",
+  "postgres",
+  "postgresql",
+  "pg",
+  "mysql",
+  "mariadb",
+  "sqlite",
+  "mssql",
+  "tsql",
+  "plsql",
+  "oracle",
+  "cockroach",
+  "cockroachdb",
+  "snowflake",
+  "bigquery",
+  "redshift",
+  "clickhouse",
+  "duckdb",
+  "d1",
+  "supabase",
+  "planetscale",
+  "neon",
+  "prisma",
+  "knex",
+  "sequelize",
+  "drizzle",
+  "datasette",
+]);
+
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
 
@@ -34,13 +103,21 @@ const PRODUCTION_PATTERNS = [
 ];
 
 const DESTRUCTIVE_PATTERNS = [
-  /\brm\b.*\s-rf\b/i,
-  /\bRemove-Item\b.*\b-Recurse\b/i,
-  /\bgit\b.*\breset\b.*\b--hard\b/i,
-  /\bgit\b.*\bclean\b.*\b-f\b/i,
+  /\brm\b(?=.*(?:\s-[a-z]*r|\s--recursive))(?=.*(?:\s-[a-z]*f|\s--force))/i,
+  /\bRemove-Item\b.*\s-Recurse\b/i,
+  /\bgit\b.*\breset\b.*\s--hard\b/i,
+  /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
+  /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b|\s\+\S)/i,
+  /\bcurl\b.*(?:\s-X\s*DELETE|\s--request[=\s]\s*DELETE)\b/i,
+];
+
+// SQL destructive statements are tool-agnostic: dedicated database tools (e.g. MCP
+// execute_sql / query tools) carry them in params rather than a shell command, so
+// these are scanned for every tool call, not only exec/shell runners.
+const SQL_DESTRUCTIVE_PATTERNS = [
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bDELETE\s+FROM\b/i,
-  /\bcurl\b.*\b-X\s*DELETE\b/i,
+  /\bTRUNCATE\s+(?:TABLE\s+)?\w/i,
 ];
 
 const PUBLISH_PATTERNS = [
@@ -60,6 +137,9 @@ const SECRET_PATTERNS = [
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/i,
   /\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b/,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/i,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+  /\bglpat-[0-9A-Za-z_-]{20}\b/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
   /-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----/i,
 ];
 
@@ -171,24 +251,61 @@ function mergeReviewRoles(defaults, requested) {
   return REVIEW_ROLE_PRIORITY.filter((role) => present.has(role));
 }
 
+/**
+ * Infer the set of side effects a tool call would have by inspecting its name,
+ * kind, and parameters (destructive shell commands, production deploys, publishing,
+ * outbound messaging, billing/financial actions, and secret exposure).
+ *
+ * @param {object} event - The `before_tool_call` event ({ toolName, toolKind, params }).
+ * @returns {string[]} A sorted, de-duplicated list of inferred effect identifiers.
+ */
 export function inferEffectsFromToolCall(event) {
   const toolName = String(event?.toolName ?? "");
   const toolKind = String(event?.toolKind ?? event?.ctx?.toolKind ?? "");
   const text = commandText(event);
+  const allParamsText = stringifyParams(event?.params);
   const effects = new Set();
 
-  if (anyPattern(SECRET_PATTERNS, text)) {
+  // Scan the whole params object, not just the command string, so a secret in
+  // headers/body/env alongside an innocuous command is still treated as exposure.
+  if (anyPattern(SECRET_PATTERNS, text) || anyPattern(SECRET_PATTERNS, allParamsText)) {
     effects.add("security_exposure");
   }
 
-  if (toolName === "exec" || toolKind.includes("exec") || toolKind === "code_mode_exec") {
-    if (anyPattern(PRODUCTION_PATTERNS, text)) {
-      effects.add("mutate_production");
-    }
-    if (anyPattern(DESTRUCTIVE_PATTERNS, text)) {
+  const toolNameTokens = toolName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const looksLikeExec =
+    EXEC_TOOL_NAMES.has(toolName) ||
+    toolKind.includes("exec") ||
+    toolNameTokens.some((token) => EXEC_TOOL_KEYWORDS.has(token));
+  const looksLikeDatabase =
+    toolKind.includes("sql") ||
+    toolKind.includes("database") ||
+    toolNameTokens.some((token) => DB_TOOL_KEYWORDS.has(token));
+
+  // Destructive SQL is gated for database/query tools (which carry it in params) and
+  // for exec runners, but not for arbitrary tools that only carry SQL as text — that
+  // would false-fire on, e.g., a web search about "DELETE FROM".
+  if (looksLikeExec || looksLikeDatabase) {
+    if (anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) || anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText)) {
       effects.add("delete_data");
     }
-    if (anyPattern(PUBLISH_PATTERNS, text)) {
+  }
+
+  if (looksLikeExec) {
+    // Scan the serialized params too, not just the command string: object-valued
+    // input/script payloads collapse to "[object Object]" in commandText and would
+    // otherwise hide the real command. Also scan a punctuation-normalized copy so
+    // structured argv (e.g. {cmd:"rm",args:["-rf","x"]}) reads as a spaced command
+    // string, since the destructive regexes expect whitespace before flags.
+    const spacedParams = allParamsText.replace(/[{}[\],:"]/g, " ");
+    const execText = `${text}\n${allParamsText}\n${spacedParams}`;
+    if (anyPattern(PRODUCTION_PATTERNS, execText)) {
+      effects.add("mutate_production");
+    }
+    if (anyPattern(DESTRUCTIVE_PATTERNS, execText)) {
+      effects.add("delete_data");
+    }
+    if (anyPattern(PUBLISH_PATTERNS, execText)) {
       effects.add("publish");
     }
   }
@@ -209,11 +326,21 @@ export function inferEffectsFromToolCall(event) {
   return [...effects].sort();
 }
 
+/**
+ * Build a scored "candidate" for a tool call: its inferred effects plus risk,
+ * irreversibility, approval requirement, and review roles. Any field may be
+ * overridden by the caller; inferred effects drive sensible defaults otherwise.
+ *
+ * @param {object} event - The `before_tool_call` event.
+ * @param {object} [overrides] - Explicit candidate fields that override inference.
+ * @returns {object} The normalized candidate object.
+ */
 export function buildToolCandidate(event, overrides = {}) {
   const inferredEffects = inferEffectsFromToolCall(event);
   const effects = normalizeEffects(overrides.effects ?? inferredEffects);
-  const risk = effects.length > 0 ? 4 : 1;
-  const irreversibility = effects.some((effect) => effect === "delete_data" || effect === "mutate_production") ? 4 : 1;
+  const highSeverity = effects.some((effect) => effect === "delete_data" || effect === "mutate_production");
+  const risk = highSeverity ? 5 : effects.length > 0 ? 4 : 1;
+  const irreversibility = highSeverity ? 4 : 1;
   const approvalRequired = effects.some((effect) => HARD_EFFECTS.has(effect));
   const candidate = {
     id: overrides.id ?? `${event?.toolCallId ?? event?.runId ?? event?.toolName ?? "tool"}-candidate`,
@@ -230,13 +357,19 @@ export function buildToolCandidate(event, overrides = {}) {
     uncertainty: overrides.uncertainty ?? 2,
     effects,
     approval_required: normalizeBoolean(overrides.approval_required, approvalRequired),
-    moves_goal: overrides.moves_goal ?? true,
+    moves_goal: normalizeBoolean(overrides.moves_goal, true),
     needs_fact_check: normalizeBoolean(overrides.needs_fact_check, false),
   };
   candidate.review_roles = mergeReviewRoles(defaultReviewRoles(candidate), normalizeReviewRoles(overrides.review_roles));
   return candidate;
 }
 
+/**
+ * Determine why a candidate requires human approval, if at all.
+ *
+ * @param {object} candidate - A candidate from {@link buildToolCandidate}.
+ * @returns {string[]} Human-readable approval reasons; empty if no approval is needed.
+ */
 export function approvalReasons(candidate) {
   const reasons = [];
   if (!candidate || typeof candidate !== "object") {
@@ -260,6 +393,14 @@ export function approvalReasons(candidate) {
   return [...new Set(reasons)];
 }
 
+/**
+ * Compute the `before_tool_call` hook decision: block a call that does not move
+ * the goal forward, request bounded approval for risky effects, or allow silently.
+ *
+ * @param {object} event - The `before_tool_call` event.
+ * @param {object} [options] - Policy options (candidateOverrides, title, timeoutMs, etc.).
+ * @returns {object|undefined} A hook decision, or `undefined` to allow without intervention.
+ */
 export function beforeToolCallDecision(event, options = {}) {
   const candidate = buildToolCandidate(event, options.candidateOverrides ?? {});
   const reasons = approvalReasons(candidate);
@@ -313,6 +454,15 @@ function missingAuditRequirements(auditResult) {
     });
 }
 
+/**
+ * Translate a completion-audit result into a `before_agent_finalize` decision.
+ * Returns a "revise" instruction listing unproven requirements when the audit is
+ * incomplete, or `undefined` when completion is proven.
+ *
+ * @param {object} auditResult - The audit result ({ status, requirements }).
+ * @param {object} [options] - Overrides for the revise instruction / retry policy.
+ * @returns {object|undefined} A revise decision, or `undefined` when complete.
+ */
 export function finalizeDecisionFromAudit(auditResult, options = {}) {
   if (!auditResult || auditResult.status === "complete") {
     return undefined;
@@ -333,6 +483,15 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
   };
 }
 
+/**
+ * Create the OpenClaw plugin entry, registering the `before_tool_call` approval
+ * gate and (when `loadCompletionAudit` is supplied) the `before_agent_finalize`
+ * completion-audit gate.
+ *
+ * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
+ * @param {object} [options] - Plugin metadata, tool/finalize policy, and audit loader.
+ * @returns {object} The plugin entry produced by `definePluginEntry`.
+ */
 export function createNextRightThingPlugin(definePluginEntry, options = {}) {
   if (typeof definePluginEntry !== "function") {
     throw new TypeError("definePluginEntry must be provided by the OpenClaw plugin runtime.");
@@ -348,12 +507,31 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       options.configSchema ?? {
         type: "object",
         additionalProperties: false,
-        properties: {},
+        properties: {
+          approvalTimeoutMs: { type: "integer", minimum: 0 },
+        },
       },
     register(api) {
+      // Honor the user-facing `approvalTimeoutMs` config knob by threading it into
+      // the tool policy. Per-call plugin config wins over plugin-level config, which
+      // wins over the static toolPolicy default. OpenClaw exposes plugin-specific
+      // config as `api.pluginConfig` (and per-call as `event.context.pluginConfig`);
+      // `api.config` / `event.config` are accepted as fallbacks for other hosts.
+      const baseToolPolicy = options.toolPolicy ?? {};
+      const pluginConfig = api?.pluginConfig ?? api?.config ?? {};
+      const pluginConfigTimeout = normalizeNumber(pluginConfig.approvalTimeoutMs, undefined);
+
       api.on(
         "before_tool_call",
-        async (event) => beforeToolCallDecision(event, options.toolPolicy),
+        async (event) => {
+          const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
+          const callConfigTimeout = normalizeNumber(callConfig.approvalTimeoutMs, undefined);
+          const timeoutMs = [callConfigTimeout, pluginConfigTimeout, baseToolPolicy.timeoutMs].find((value) =>
+            Number.isFinite(value),
+          );
+          const toolPolicy = Number.isFinite(timeoutMs) ? { ...baseToolPolicy, timeoutMs } : baseToolPolicy;
+          return beforeToolCallDecision(event, toolPolicy);
+        },
         { priority: options.toolPriority ?? 75, timeoutMs: options.toolTimeoutMs ?? 5_000 },
       );
 

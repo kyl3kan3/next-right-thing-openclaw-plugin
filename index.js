@@ -10,7 +10,8 @@ export default createNextRightThingPlugin(definePluginEntry, {
     additionalProperties: false,
     properties: {
       approvalTimeoutMs: {
-        type: "number",
+        type: "integer",
+        minimum: 0,
         description: "Approval timeout in milliseconds for guarded tool calls.",
       },
     },
