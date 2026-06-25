@@ -53,6 +53,44 @@ export const EXEC_TOOL_KEYWORDS = new Set([
   "run",
 ]);
 
+// Single-word tokens that mark a tool as a database/query tool, so destructive SQL
+// is gated for them (and for exec runners) without false-firing on arbitrary tools
+// that merely carry SQL as text (e.g. a web search about "DELETE FROM").
+export const DB_TOOL_KEYWORDS = new Set([
+  "sql",
+  "db",
+  "database",
+  "databases",
+  "query",
+  "queries",
+  "postgres",
+  "postgresql",
+  "pg",
+  "mysql",
+  "mariadb",
+  "sqlite",
+  "mssql",
+  "tsql",
+  "plsql",
+  "oracle",
+  "cockroach",
+  "cockroachdb",
+  "snowflake",
+  "bigquery",
+  "redshift",
+  "clickhouse",
+  "duckdb",
+  "d1",
+  "supabase",
+  "planetscale",
+  "neon",
+  "prisma",
+  "knex",
+  "sequelize",
+  "drizzle",
+  "datasette",
+]);
+
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
 
@@ -235,17 +273,24 @@ export function inferEffectsFromToolCall(event) {
     effects.add("security_exposure");
   }
 
-  // Destructive SQL is tool-agnostic — scan every call (database tools carry it in
-  // params), not only shell/exec runners.
-  if (anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) || anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText)) {
-    effects.add("delete_data");
-  }
-
   const toolNameTokens = toolName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const looksLikeExec =
     EXEC_TOOL_NAMES.has(toolName) ||
     toolKind.includes("exec") ||
     toolNameTokens.some((token) => EXEC_TOOL_KEYWORDS.has(token));
+  const looksLikeDatabase =
+    toolKind.includes("sql") ||
+    toolKind.includes("database") ||
+    toolNameTokens.some((token) => DB_TOOL_KEYWORDS.has(token));
+
+  // Destructive SQL is gated for database/query tools (which carry it in params) and
+  // for exec runners, but not for arbitrary tools that only carry SQL as text — that
+  // would false-fire on, e.g., a web search about "DELETE FROM".
+  if (looksLikeExec || looksLikeDatabase) {
+    if (anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) || anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText)) {
+      effects.add("delete_data");
+    }
+  }
 
   if (looksLikeExec) {
     // Scan the serialized params too, not just the command string: object-valued

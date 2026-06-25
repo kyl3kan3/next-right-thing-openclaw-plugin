@@ -45,6 +45,21 @@ test("destructive SQL through non-exec database tools is gated", () => {
   }
 });
 
+test("SQL text in non-database/non-exec tools does not false-fire", () => {
+  // A search/notes tool merely mentioning SQL must not trigger the destructive gate.
+  const benign = [
+    { toolName: "web_search", params: { query: "how does DELETE FROM work in SQL?" } },
+    { toolName: "notion_create_page", params: { content: "Reminder: never run DROP TABLE in prod" } },
+  ];
+  for (const call of benign) {
+    assert.ok(
+      !inferEffectsFromToolCall(call).includes("delete_data"),
+      `did not expect delete_data for: ${call.toolName}`,
+    );
+    assert.equal(beforeToolCallDecision(call), undefined);
+  }
+});
+
 test("rm recursive+force is gated regardless of flag order/spelling", () => {
   for (const cmd of ["rm -rf x", "rm -fr x", "rm -r -f x", "rm --recursive --force x"]) {
     assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
