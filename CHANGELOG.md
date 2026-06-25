@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed (adversarial-test hardening)
+
+An adversarial test workflow found and reproduced six gate bypasses; all are fixed
+with regression tests:
+
+- **Capitalized MCP tool names** (`mcp__Gmail__`, `mcp__Slack__`, `mcp__Stripe__`)
+  bypassed the messaging/financial name checks — name inference now matches the
+  lowercased tool name.
+- **Multiline/whitespace SQL** and **SQL split across argv elements** on database
+  tools evaded the destructive-SQL scan — params are now normalized (escaped
+  whitespace + punctuation → spaces) and that copy is scanned for SQL too.
+- **camelCase exec tool names** (`runCommand`) weren't recognized — the tokenizer
+  now splits camelCase boundaries.
+- **GitHub fine-grained PATs** (`github_pat_…`) weren't detected — added to the
+  secret patterns, alongside new Stripe (`sk_live_`/`sk_test_`) and npm token shapes.
+- **Heartbeat:** a string `maxTicksPerDay` (e.g. `"24"`) silently disabled the daily
+  budget cap — the value is now coerced with `Number()` like its sibling config fields.
+
 ### Added
 
 - **Optional `heartbeat/` companion (Layer 3 "continuation engine").** A small,
