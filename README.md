@@ -7,11 +7,14 @@ It adds approval gates around risky tool calls and a completion-audit hook surfa
 ## Install
 
 ```bash
-openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.2.2-openclaw
+openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@main
 openclaw plugins enable next-right-thing
 openclaw gateway restart
 openclaw plugins inspect next-right-thing --runtime --json
 ```
+
+> Installs the latest `main`. To pin to a release instead, replace `@main` with a
+> published tag (e.g. `@v0.2.2-openclaw`).
 
 ## Smoke Test
 
