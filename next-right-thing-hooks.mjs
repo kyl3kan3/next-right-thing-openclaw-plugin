@@ -248,13 +248,17 @@ export function inferEffectsFromToolCall(event) {
     toolNameTokens.some((token) => EXEC_TOOL_KEYWORDS.has(token));
 
   if (looksLikeExec) {
-    if (anyPattern(PRODUCTION_PATTERNS, text)) {
+    // Scan the serialized params too, not just the command string: object-valued
+    // input/script payloads collapse to "[object Object]" in commandText and would
+    // otherwise hide the real command from these patterns.
+    const execText = `${text}\n${allParamsText}`;
+    if (anyPattern(PRODUCTION_PATTERNS, execText)) {
       effects.add("mutate_production");
     }
-    if (anyPattern(DESTRUCTIVE_PATTERNS, text)) {
+    if (anyPattern(DESTRUCTIVE_PATTERNS, execText)) {
       effects.add("delete_data");
     }
-    if (anyPattern(PUBLISH_PATTERNS, text)) {
+    if (anyPattern(PUBLISH_PATTERNS, execText)) {
       effects.add("publish");
     }
   }

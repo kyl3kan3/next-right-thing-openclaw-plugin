@@ -130,6 +130,20 @@ test("command patterns are scanned under non-exec shell tool names", () => {
   assert.ok(effects.includes("delete_data"));
 });
 
+test("nested object payloads under exec-like tools are still scanned", () => {
+  const nested = [
+    { toolName: "exec_command", params: { input: { command: "rm -rf /tmp/x" } }, effect: "delete_data" },
+    { toolName: "exec", params: { script: { run: "vercel deploy --prod" } }, effect: "mutate_production" },
+    { toolName: "shell", params: { input: { cmd: "npm publish" } }, effect: "publish" },
+  ];
+  for (const { toolName, params, effect } of nested) {
+    assert.ok(
+      inferEffectsFromToolCall({ toolName, params }).includes(effect),
+      `expected ${effect} for nested payload under ${toolName}`,
+    );
+  }
+});
+
 test("underscored and namespaced exec tool names are recognized", () => {
   for (const toolName of ["exec_command", "shell_command", "functions.exec_command", "run_shell_command"]) {
     const effects = inferEffectsFromToolCall({ toolName, params: { command: "rm -rf /tmp/x" } });
