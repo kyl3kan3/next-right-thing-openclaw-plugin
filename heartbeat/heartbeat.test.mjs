@@ -142,3 +142,9 @@ test("B6: a string maxTicksPerDay still enforces the budget cap", () => {
   assert.equal(shouldRunNow({ maxTicksPerDay: "24" }, state, at(12), 9999).run, false);
   assert.equal(shouldRunNow({ maxTicksPerDay: "24" }, state, at(12), 5).run, true);
 });
+
+test("null/undefined maxTicksPerDay means unlimited (not a 0 cap)", () => {
+  const state = { mission: "go", queue: [] };
+  assert.equal(shouldRunNow({ maxTicksPerDay: null }, state, at(12), 9999).run, true);
+  assert.equal(shouldRunNow({}, state, at(12), 9999).run, true);
+});

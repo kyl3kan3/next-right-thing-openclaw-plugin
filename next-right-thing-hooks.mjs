@@ -172,6 +172,22 @@ function commandText(event) {
   return String(params.cmd ?? params.command ?? params.input ?? params.script ?? stringifyParams(params));
 }
 
+// Recursively join all leaf string/number/boolean values in params with spaces, so a
+// command or SQL statement split across keys/arrays (e.g. {cmd:"DELETE",args:["FROM","x"]})
+// reads as one contiguous string without the JSON key names wedged between tokens.
+function flattenParamValues(value, out = []) {
+  if (typeof value === "string") {
+    out.push(value);
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    out.push(String(value));
+  } else if (Array.isArray(value)) {
+    for (const v of value) flattenParamValues(v, out);
+  } else if (value && typeof value === "object") {
+    for (const v of Object.values(value)) flattenParamValues(v, out);
+  }
+  return out;
+}
+
 function anyPattern(patterns, text) {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -284,6 +300,9 @@ export function inferEffectsFromToolCall(event) {
   // command/SQL split across keys or an argv array, or carried as a multiline string,
   // still reads as spaced text the patterns can match.
   const normalizedParams = allParamsText.replace(/\\[ntr]/g, " ").replace(/[{}[\],:"]/g, " ");
+  // Param VALUES joined by spaces — catches a command/SQL split across a primary field
+  // and an args array (the JSON key names are dropped, unlike normalizedParams).
+  const valuesText = flattenParamValues(event?.params).join(" ");
   const lowerToolName = toolName.toLowerCase();
   const effects = new Set();
 
@@ -293,9 +312,11 @@ export function inferEffectsFromToolCall(event) {
     effects.add("security_exposure");
   }
 
-  // Split on non-alphanumerics AND camelCase boundaries so exec_command, runCommand,
-  // and functions.execCommand all tokenize to recognizable keywords.
+  // Split on non-alphanumerics, ACRONYM runs (DBExec → DB Exec, SQLQuery → SQL Query),
+  // and camelCase boundaries (runCommand → run Command) so compound/acronym/namespaced
+  // tool names all tokenize to recognizable keywords.
   const toolNameTokens = toolName
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase()
     .split(/[^a-z0-9]+/)
@@ -317,7 +338,8 @@ export function inferEffectsFromToolCall(event) {
     if (
       anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) ||
       anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText) ||
-      anyPattern(SQL_DESTRUCTIVE_PATTERNS, normalizedParams)
+      anyPattern(SQL_DESTRUCTIVE_PATTERNS, normalizedParams) ||
+      anyPattern(SQL_DESTRUCTIVE_PATTERNS, valuesText)
     ) {
       effects.add("delete_data");
     }
@@ -327,7 +349,7 @@ export function inferEffectsFromToolCall(event) {
     // Scan the command string, the serialized params (object-valued input/script
     // payloads collapse to "[object Object]" in commandText), and the normalized copy
     // (so structured argv like {cmd:"rm",args:["-rf","x"]} reads as a spaced command).
-    const execText = `${text}\n${allParamsText}\n${normalizedParams}`;
+    const execText = `${text}\n${allParamsText}\n${normalizedParams}\n${valuesText}`;
     if (anyPattern(PRODUCTION_PATTERNS, execText)) {
       effects.add("mutate_production");
     }

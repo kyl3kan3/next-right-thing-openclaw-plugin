@@ -383,3 +383,14 @@ test("B5: destructive SQL split across argv elements is gated", () => {
   assert.ok(inferEffectsFromToolCall({ toolName: "exec", params: { args: ["DELETE", "FROM", "users"] } }).includes("delete_data"));
   assert.ok(inferEffectsFromToolCall({ toolName: "postgres_query", params: { args: ["DROP", "TABLE", "x"] } }).includes("delete_data"));
 });
+
+test("B5b: destructive SQL split between a primary field and args is gated", () => {
+  assert.ok(inferEffectsFromToolCall({ toolName: "exec", params: { cmd: "DELETE", args: ["FROM", "users"] } }).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "postgres_query", params: { query: "DROP", args: ["TABLE", "x"] } }).includes("delete_data"));
+});
+
+test("acronym-prefixed exec/db tool names are recognized", () => {
+  assert.ok(inferEffectsFromToolCall({ toolName: "DBExec", params: { cmd: "rm -rf x" } }).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "SQLQuery", params: { query: "DROP TABLE x" } }).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "MCPExecCommand", params: { cmd: "rm -rf x" } }).includes("delete_data"));
+});
