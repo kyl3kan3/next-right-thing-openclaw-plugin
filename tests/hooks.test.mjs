@@ -29,6 +29,20 @@ test("destructive commands infer delete_data (regex word-boundary regression)", 
   }
 });
 
+test("long-form destructive flag variants are also gated", () => {
+  for (const cmd of [
+    "git clean --force -d",
+    "git clean -d --force",
+    "curl --request DELETE https://api.example.com/things/1",
+    "curl --request=DELETE https://api.example.com/things/1",
+  ]) {
+    assert.ok(
+      inferEffectsFromToolCall(exec(cmd)).includes("delete_data"),
+      `expected delete_data for: ${cmd}`,
+    );
+  }
+});
+
 test("production deploys infer mutate_production", () => {
   for (const cmd of [
     "vercel deploy --prod",
@@ -69,6 +83,13 @@ test("command patterns are scanned under non-exec shell tool names", () => {
   assert.ok(effects.includes("delete_data"));
 });
 
+test("underscored and namespaced exec tool names are recognized", () => {
+  for (const toolName of ["exec_command", "shell_command", "functions.exec_command", "run_shell_command"]) {
+    const effects = inferEffectsFromToolCall({ toolName, params: { command: "rm -rf /tmp/x" } });
+    assert.ok(effects.includes("delete_data"), `expected delete_data for tool: ${toolName}`);
+  }
+});
+
 test('destructive/production candidates reach "critical" severity', () => {
   const decision = beforeToolCallDecision(exec("rm -rf /"));
   assert.ok(decision.requireApproval, "destructive call should require approval");
@@ -101,12 +122,21 @@ test("approvalTimeoutMs config is threaded into the approval prompt", async () =
     toolPolicy: { timeoutMs: 60_000, timeoutBehavior: "deny" },
   });
   plugin.register({
-    config: { approvalTimeoutMs: 12_345 },
+    pluginConfig: { approvalTimeoutMs: 12_345 },
     on(name, handler) {
       registered.push({ name, handler });
     },
   });
   const before = registered.find((r) => r.name === "before_tool_call");
+
+  // Plugin-level config is applied when no per-call override is present.
   const decision = await before.handler(exec("vercel deploy --prod"));
   assert.equal(decision.requireApproval.timeoutMs, 12_345);
+
+  // Per-call config (event.context.pluginConfig) takes precedence over plugin config.
+  const perCall = await before.handler({
+    ...exec("vercel deploy --prod"),
+    context: { pluginConfig: { approvalTimeoutMs: 23_456 } },
+  });
+  assert.equal(perCall.requireApproval.timeoutMs, 23_456);
 });

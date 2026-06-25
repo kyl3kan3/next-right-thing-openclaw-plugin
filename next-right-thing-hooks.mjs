@@ -36,6 +36,23 @@ export const EXEC_TOOL_NAMES = new Set([
   "run_shell_command",
 ]);
 
+// Single-word tokens that mark a tool name as an exec/shell runner. Matched against
+// the name split on any non-alphanumeric separator, so underscored and namespaced
+// names (exec_command, shell_command, functions.exec_command) are recognized too.
+export const EXEC_TOOL_KEYWORDS = new Set([
+  "exec",
+  "bash",
+  "shell",
+  "sh",
+  "zsh",
+  "powershell",
+  "pwsh",
+  "terminal",
+  "cmd",
+  "command",
+  "run",
+]);
+
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
 
@@ -52,10 +69,10 @@ const DESTRUCTIVE_PATTERNS = [
   /\brm\b.*\s-rf\b/i,
   /\bRemove-Item\b.*\s-Recurse\b/i,
   /\bgit\b.*\breset\b.*\s--hard\b/i,
-  /\bgit\b.*\bclean\b.*\s-[a-z]*f/i,
+  /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bDELETE\s+FROM\b/i,
-  /\bcurl\b.*\s-X\s*DELETE\b/i,
+  /\bcurl\b.*(?:\s-X\s*DELETE|\s--request[=\s]\s*DELETE)\b/i,
 ];
 
 const PUBLISH_PATTERNS = [
@@ -186,6 +203,14 @@ function mergeReviewRoles(defaults, requested) {
   return REVIEW_ROLE_PRIORITY.filter((role) => present.has(role));
 }
 
+/**
+ * Infer the set of side effects a tool call would have by inspecting its name,
+ * kind, and parameters (destructive shell commands, production deploys, publishing,
+ * outbound messaging, billing/financial actions, and secret exposure).
+ *
+ * @param {object} event - The `before_tool_call` event ({ toolName, toolKind, params }).
+ * @returns {string[]} A sorted, de-duplicated list of inferred effect identifiers.
+ */
 export function inferEffectsFromToolCall(event) {
   const toolName = String(event?.toolName ?? "");
   const toolKind = String(event?.toolKind ?? event?.ctx?.toolKind ?? "");
@@ -199,10 +224,11 @@ export function inferEffectsFromToolCall(event) {
     effects.add("security_exposure");
   }
 
+  const toolNameTokens = toolName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const looksLikeExec =
     EXEC_TOOL_NAMES.has(toolName) ||
     toolKind.includes("exec") ||
-    /\b(?:bash|shell|terminal|exec|command)\b/i.test(toolName);
+    toolNameTokens.some((token) => EXEC_TOOL_KEYWORDS.has(token));
 
   if (looksLikeExec) {
     if (anyPattern(PRODUCTION_PATTERNS, text)) {
@@ -232,6 +258,15 @@ export function inferEffectsFromToolCall(event) {
   return [...effects].sort();
 }
 
+/**
+ * Build a scored "candidate" for a tool call: its inferred effects plus risk,
+ * irreversibility, approval requirement, and review roles. Any field may be
+ * overridden by the caller; inferred effects drive sensible defaults otherwise.
+ *
+ * @param {object} event - The `before_tool_call` event.
+ * @param {object} [overrides] - Explicit candidate fields that override inference.
+ * @returns {object} The normalized candidate object.
+ */
 export function buildToolCandidate(event, overrides = {}) {
   const inferredEffects = inferEffectsFromToolCall(event);
   const effects = normalizeEffects(overrides.effects ?? inferredEffects);
@@ -261,6 +296,12 @@ export function buildToolCandidate(event, overrides = {}) {
   return candidate;
 }
 
+/**
+ * Determine why a candidate requires human approval, if at all.
+ *
+ * @param {object} candidate - A candidate from {@link buildToolCandidate}.
+ * @returns {string[]} Human-readable approval reasons; empty if no approval is needed.
+ */
 export function approvalReasons(candidate) {
   const reasons = [];
   if (!candidate || typeof candidate !== "object") {
@@ -284,6 +325,14 @@ export function approvalReasons(candidate) {
   return [...new Set(reasons)];
 }
 
+/**
+ * Compute the `before_tool_call` hook decision: block a call that does not move
+ * the goal forward, request bounded approval for risky effects, or allow silently.
+ *
+ * @param {object} event - The `before_tool_call` event.
+ * @param {object} [options] - Policy options (candidateOverrides, title, timeoutMs, etc.).
+ * @returns {object|undefined} A hook decision, or `undefined` to allow without intervention.
+ */
 export function beforeToolCallDecision(event, options = {}) {
   const candidate = buildToolCandidate(event, options.candidateOverrides ?? {});
   const reasons = approvalReasons(candidate);
@@ -337,6 +386,15 @@ function missingAuditRequirements(auditResult) {
     });
 }
 
+/**
+ * Translate a completion-audit result into a `before_agent_finalize` decision.
+ * Returns a "revise" instruction listing unproven requirements when the audit is
+ * incomplete, or `undefined` when completion is proven.
+ *
+ * @param {object} auditResult - The audit result ({ status, requirements }).
+ * @param {object} [options] - Overrides for the revise instruction / retry policy.
+ * @returns {object|undefined} A revise decision, or `undefined` when complete.
+ */
 export function finalizeDecisionFromAudit(auditResult, options = {}) {
   if (!auditResult || auditResult.status === "complete") {
     return undefined;
@@ -357,6 +415,15 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
   };
 }
 
+/**
+ * Create the OpenClaw plugin entry, registering the `before_tool_call` approval
+ * gate and (when `loadCompletionAudit` is supplied) the `before_agent_finalize`
+ * completion-audit gate.
+ *
+ * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
+ * @param {object} [options] - Plugin metadata, tool/finalize policy, and audit loader.
+ * @returns {object} The plugin entry produced by `definePluginEntry`.
+ */
 export function createNextRightThingPlugin(definePluginEntry, options = {}) {
   if (typeof definePluginEntry !== "function") {
     throw new TypeError("definePluginEntry must be provided by the OpenClaw plugin runtime.");
@@ -372,19 +439,25 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       options.configSchema ?? {
         type: "object",
         additionalProperties: false,
-        properties: {},
+        properties: {
+          approvalTimeoutMs: { type: "integer", minimum: 0 },
+        },
       },
     register(api) {
       // Honor the user-facing `approvalTimeoutMs` config knob by threading it into
-      // the tool policy. Per-call config (event.config) wins over plugin config,
-      // which wins over the static toolPolicy default.
+      // the tool policy. Per-call plugin config wins over plugin-level config, which
+      // wins over the static toolPolicy default. OpenClaw exposes plugin-specific
+      // config as `api.pluginConfig` (and per-call as `event.context.pluginConfig`);
+      // `api.config` / `event.config` are accepted as fallbacks for other hosts.
       const baseToolPolicy = options.toolPolicy ?? {};
-      const pluginConfigTimeout = normalizeNumber(api?.config?.approvalTimeoutMs, undefined);
+      const pluginConfig = api?.pluginConfig ?? api?.config ?? {};
+      const pluginConfigTimeout = normalizeNumber(pluginConfig.approvalTimeoutMs, undefined);
 
       api.on(
         "before_tool_call",
         async (event) => {
-          const callConfigTimeout = normalizeNumber(event?.config?.approvalTimeoutMs, undefined);
+          const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
+          const callConfigTimeout = normalizeNumber(callConfig.approvalTimeoutMs, undefined);
           const timeoutMs = [callConfigTimeout, pluginConfigTimeout, baseToolPolicy.timeoutMs].find((value) =>
             Number.isFinite(value),
           );
