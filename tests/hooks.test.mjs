@@ -50,6 +50,8 @@ test("SQL text in non-database/non-exec tools does not false-fire", () => {
   const benign = [
     { toolName: "web_search", params: { query: "how does DELETE FROM work in SQL?" } },
     { toolName: "notion_create_page", params: { content: "Reminder: never run DROP TABLE in prod" } },
+    { toolName: "search_query", params: { query: "how does DELETE FROM work in SQL?" } },
+    { toolName: "knowledge_query", params: { q: "explain DROP TABLE semantics" } },
   ];
   for (const call of benign) {
     assert.ok(

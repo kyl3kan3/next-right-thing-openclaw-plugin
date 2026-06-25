@@ -55,14 +55,13 @@ export const EXEC_TOOL_KEYWORDS = new Set([
 
 // Single-word tokens that mark a tool as a database/query tool, so destructive SQL
 // is gated for them (and for exec runners) without false-firing on arbitrary tools
-// that merely carry SQL as text (e.g. a web search about "DELETE FROM").
+// that merely carry SQL as text (e.g. a web search about "DELETE FROM"). Deliberately
+// excludes generic tokens like "query" that appear in non-DB tool names (search_query).
 export const DB_TOOL_KEYWORDS = new Set([
   "sql",
   "db",
   "database",
   "databases",
-  "query",
-  "queries",
   "postgres",
   "postgresql",
   "pg",
