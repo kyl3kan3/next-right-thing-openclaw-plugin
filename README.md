@@ -16,6 +16,21 @@ openclaw plugins inspect next-right-thing --runtime --json
 > Installs the latest `main`. To pin to a release instead, replace `@main` with a
 > published tag (e.g. `@v0.2.2-openclaw`).
 
+### Required: grant conversation access (one line)
+
+The reflective-deliberation feature runs on the `before_agent_finalize` hook, which
+OpenClaw gates behind an operator-granted permission. It cannot be auto-enabled by the
+plugin — add this once to your OpenClaw config so the contemplation actually fires:
+
+```json
+{ "plugins": { "entries": { "next-right-thing": {
+  "hooks": { "allowConversationAccess": true }
+} } } }
+```
+
+Without it the approval gate still works, but the reflection step stays off. See
+[Configuration](#configuration) for the full options.
+
 ## Smoke Test
 
 Ask OpenClaw to run a safe command first:
