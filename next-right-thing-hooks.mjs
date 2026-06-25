@@ -66,13 +66,21 @@ const PRODUCTION_PATTERNS = [
 ];
 
 const DESTRUCTIVE_PATTERNS = [
-  /\brm\b.*\s-rf\b/i,
+  /\brm\b(?=.*(?:\s-[a-z]*r|\s--recursive))(?=.*(?:\s-[a-z]*f|\s--force))/i,
   /\bRemove-Item\b.*\s-Recurse\b/i,
   /\bgit\b.*\breset\b.*\s--hard\b/i,
   /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
+  /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b)/i,
+  /\bcurl\b.*(?:\s-X\s*DELETE|\s--request[=\s]\s*DELETE)\b/i,
+];
+
+// SQL destructive statements are tool-agnostic: dedicated database tools (e.g. MCP
+// execute_sql / query tools) carry them in params rather than a shell command, so
+// these are scanned for every tool call, not only exec/shell runners.
+const SQL_DESTRUCTIVE_PATTERNS = [
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bDELETE\s+FROM\b/i,
-  /\bcurl\b.*(?:\s-X\s*DELETE|\s--request[=\s]\s*DELETE)\b/i,
+  /\bTRUNCATE\s+(?:TABLE\s+)?\w/i,
 ];
 
 const PUBLISH_PATTERNS = [
@@ -92,6 +100,9 @@ const SECRET_PATTERNS = [
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/i,
   /\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b/,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/i,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+  /\bglpat-[0-9A-Za-z_-]{20}\b/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
   /-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----/i,
 ];
 
@@ -222,6 +233,12 @@ export function inferEffectsFromToolCall(event) {
   // headers/body/env alongside an innocuous command is still treated as exposure.
   if (anyPattern(SECRET_PATTERNS, text) || anyPattern(SECRET_PATTERNS, allParamsText)) {
     effects.add("security_exposure");
+  }
+
+  // Destructive SQL is tool-agnostic — scan every call (database tools carry it in
+  // params), not only shell/exec runners.
+  if (anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) || anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText)) {
+    effects.add("delete_data");
   }
 
   const toolNameTokens = toolName.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);

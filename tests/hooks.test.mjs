@@ -29,6 +29,53 @@ test("destructive commands infer delete_data (regex word-boundary regression)", 
   }
 });
 
+test("destructive SQL through non-exec database tools is gated", () => {
+  // These dedicated DB tools carry SQL in params, not a shell command.
+  const dbCalls = [
+    { toolName: "mcp__db__execute_sql", params: { query: "DROP TABLE users" } },
+    { toolName: "postgres_query", params: { sql: "DELETE FROM accounts WHERE 1=1" } },
+    { toolName: "d1_database_query", params: { sql: "TRUNCATE TABLE sessions" } },
+  ];
+  for (const call of dbCalls) {
+    assert.ok(
+      inferEffectsFromToolCall(call).includes("delete_data"),
+      `expected delete_data for DB tool: ${call.toolName}`,
+    );
+    assert.ok(beforeToolCallDecision(call).requireApproval, `expected approval for: ${call.toolName}`);
+  }
+});
+
+test("rm recursive+force is gated regardless of flag order/spelling", () => {
+  for (const cmd of ["rm -rf x", "rm -fr x", "rm -r -f x", "rm --recursive --force x"]) {
+    assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
+  }
+  // Non-recursive or non-force rm should not trip the destructive gate.
+  assert.ok(!inferEffectsFromToolCall(exec("rm -f x")).includes("delete_data"));
+});
+
+test("git push --force is gated", () => {
+  for (const cmd of ["git push --force origin main", "git push -f", "git push --force-with-lease"]) {
+    assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
+  }
+});
+
+test("expanded secret patterns are detected", () => {
+  // Assemble fixtures from fragments so no full secret literal lives in source —
+  // these are dummy shapes for the detector, and embedding them whole would trip
+  // repo secret scanners (and be poor practice) even though they are not real keys.
+  const secrets = [
+    "AIza" + "a".repeat(35), // Google API key shape
+    "glpat-" + "A".repeat(20), // GitLab PAT shape
+    ["eyJ" + "a".repeat(20), "b".repeat(20), "c".repeat(20)].join("."), // JWT shape
+  ];
+  for (const secret of secrets) {
+    assert.ok(
+      inferEffectsFromToolCall(exec(`echo ${secret}`)).includes("security_exposure"),
+      `expected security_exposure for: ${secret.slice(0, 8)}...`,
+    );
+  }
+});
+
 test("long-form destructive flag variants are also gated", () => {
   for (const cmd of [
     "git clean --force -d",
