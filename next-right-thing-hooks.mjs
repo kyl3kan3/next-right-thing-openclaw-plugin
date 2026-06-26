@@ -25,6 +25,17 @@ export const HARD_EFFECTS = new Set([
   "security_exposure",
 ]);
 
+// Effect classes severe enough to score a tool call as `critical` (risk 5) rather than
+// a plain `warning`: irreversible data loss/overwrite, production mutation, and the
+// auth/privilege changes that enable privilege escalation or auth tampering.
+const HIGH_SEVERITY_EFFECTS = new Set([
+  "delete_data",
+  "overwrite_data",
+  "mutate_production",
+  "change_auth",
+  "change_permissions",
+]);
+
 export const EXEC_TOOL_NAMES = new Set([
   "exec",
   "code_mode_exec",
@@ -117,21 +128,39 @@ const PRODUCTION_PATTERNS = [
 ];
 
 const DESTRUCTIVE_PATTERNS = [
-  /\brm\b(?=.*(?:\s-[a-z]*r|\s--recursive))(?=.*(?:\s-[a-z]*f|\s--force))/i,
+  // Recursion is the irreversible part of `rm`, so gate it whether or not -f is also
+  // present (-f only suppresses prompts; `rm -r dir` still destroys a tree).
+  /\brm\b(?=.*(?:\s-[a-z]*r|\s--recursive))/i,
   /\bRemove-Item\b.*\s-Recurse\b/i,
   /\bgit\b.*\breset\b.*\s--hard\b/i,
   /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
   /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b|\s\+\S)/i,
   /\bcurl\b.*(?:\s-X\s*DELETE|\s--request[=\s]\s*DELETE)\b/i,
+  // Raw-disk / filesystem / secure-erase primitives — irreversible data destruction
+  // that is not spelled with `rm` at all.
+  /\bdd\b(?=[\s\S]*\bof=)/i,
+  /\bmkfs(?:\.\w+)?\b/i,
+  /\b(?:shred|wipefs|blkdiscard)\b/i,
+  /\bfind\b[\s\S]*\s-delete\b/i,
+  /\btruncate\b\s+-s\b/i,
+  // Truncation-via-redirect of a data file (e.g. `cat /dev/null > app.sqlite`).
+  />\s*\S*\.(?:db|sqlite3?|sql|dump|bak)\b/i,
 ];
 
-// SQL destructive statements are tool-agnostic: dedicated database tools (e.g. MCP
-// execute_sql / query tools) carry them in params rather than a shell command, so
-// these are scanned for every tool call, not only exec/shell runners.
-const SQL_DESTRUCTIVE_PATTERNS = [
-  /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
-  /\bDELETE\s+FROM\b/i,
-  /\bTRUNCATE\s+(?:TABLE\s+)?\w/i,
+// Destructive/mutating SQL by the HARD_EFFECT each statement implies. Tool-agnostic:
+// dedicated database tools (e.g. MCP execute_sql / query tools) carry SQL in params
+// rather than a shell command, so these are scanned for database- and exec-like tools
+// (not arbitrary tools that merely mention SQL as text). DROP TABLE/DELETE/TRUNCATE
+// are not the only destructive shapes — mass UPDATE, privilege GRANT/REVOKE, and
+// role/user (auth) changes mutate just as irreversibly and must gate too.
+const SQL_EFFECT_PATTERNS = [
+  [/\bDROP\s+(?:TABLE|DATABASE|SCHEMA|VIEW|INDEX|SEQUENCE)\b/i, "delete_data"],
+  [/\bDELETE\s+FROM\b/i, "delete_data"],
+  [/\bTRUNCATE\s+(?:TABLE\s+)?\w/i, "delete_data"],
+  [/\bUPDATE\s+\S+\s+SET\b/i, "overwrite_data"],
+  [/\bALTER\s+TABLE\b[\s\S]*\bDROP\b/i, "overwrite_data"],
+  [/\b(?:GRANT|REVOKE)\b/i, "change_permissions"],
+  [/\b(?:CREATE|DROP|ALTER)\s+(?:ROLE|USER|GROUP)\b/i, "change_auth"],
 ];
 
 const PUBLISH_PATTERNS = [
@@ -335,13 +364,11 @@ export function inferEffectsFromToolCall(event) {
   // would false-fire on, e.g., a web search about "DELETE FROM". The normalized copy
   // catches SQL split across argv elements or carried as a multiline string.
   if (looksLikeExec || looksLikeDatabase) {
-    if (
-      anyPattern(SQL_DESTRUCTIVE_PATTERNS, text) ||
-      anyPattern(SQL_DESTRUCTIVE_PATTERNS, allParamsText) ||
-      anyPattern(SQL_DESTRUCTIVE_PATTERNS, normalizedParams) ||
-      anyPattern(SQL_DESTRUCTIVE_PATTERNS, valuesText)
-    ) {
-      effects.add("delete_data");
+    const sqlTexts = [text, allParamsText, normalizedParams, valuesText];
+    for (const [pattern, effect] of SQL_EFFECT_PATTERNS) {
+      if (sqlTexts.some((sqlText) => pattern.test(sqlText))) {
+        effects.add(effect);
+      }
     }
   }
 
@@ -391,7 +418,7 @@ export function inferEffectsFromToolCall(event) {
 export function buildToolCandidate(event, overrides = {}) {
   const inferredEffects = inferEffectsFromToolCall(event);
   const effects = normalizeEffects(overrides.effects ?? inferredEffects);
-  const highSeverity = effects.some((effect) => effect === "delete_data" || effect === "mutate_production");
+  const highSeverity = effects.some((effect) => HIGH_SEVERITY_EFFECTS.has(effect));
   const risk = highSeverity ? 5 : effects.length > 0 ? 4 : 1;
   const irreversibility = highSeverity ? 4 : 1;
   const approvalRequired = effects.some((effect) => HARD_EFFECTS.has(effect));

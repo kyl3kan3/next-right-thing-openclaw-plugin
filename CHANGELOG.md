@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed (effect-inference completeness — found by the E2E adversarial workflow)
+
+Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced through the
+**registered** `before_tool_call` handler and fixed with regression tests (B7/B8):
+
+- **Destructive SQL beyond `DROP`/`DELETE`/`TRUNCATE` was silently allowed** on recognized database
+  tools. Mass `UPDATE … SET` (→ `overwrite_data`), `ALTER TABLE … DROP` (→ `overwrite_data`),
+  `GRANT`/`REVOKE` (→ `change_permissions`), and `CREATE`/`DROP`/`ALTER ROLE|USER` (→ `change_auth`)
+  now infer their proper HARD_EFFECT and require **critical** approval — closing privilege-escalation
+  (`GRANT … TO anon`), auth-tampering (`DROP ROLE`), and mass-mutation paths.
+- **Irreversible shell primitives other than `rm -rf` were silently allowed.** `dd … of=`, `mkfs`,
+  `shred`/`wipefs`/`blkdiscard`, `find … -delete`, `truncate -s`, data-file truncation via redirect
+  (`> app.sqlite`), and **recursive `rm` without `-f`** now infer `delete_data` and gate as critical.
+  Benign look-alikes (`rm file`, `rm -f tmp`, `echo > out.txt`, `dd --help`) still pass.
+
 ### Added
 
 - **End-to-end test (`heartbeat/e2e.test.mjs`).** Drives the whole chain the way OpenClaw does, in one
