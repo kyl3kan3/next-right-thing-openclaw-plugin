@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 
 PLUGIN_ID="${PLUGIN_ID:-next-right-thing}"
-PLUGIN_REF="${PLUGIN_REF:-v0.3.2-openclaw}"
+PLUGIN_REF="${PLUGIN_REF:-v0.3.3-openclaw}"
 PLUGIN_SPEC="${PLUGIN_SPEC:-git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@${PLUGIN_REF}}"
 SKIP_RESTART="${SKIP_RESTART:-0}"
+OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -18,6 +19,12 @@ need() {
 }
 
 need openclaw
+
+if [ -z "${TMPDIR:-}" ]; then
+  TMPDIR="$OPENCLAW_HOME/tmp"
+  mkdir -p "$TMPDIR"
+  export TMPDIR TMP="$TMPDIR" TEMP="$TMPDIR"
+fi
 
 log "OpenClaw version"
 openclaw --version
@@ -44,6 +51,22 @@ openclaw plugins inspect "$PLUGIN_ID" --runtime --json | tee "$inspect_file"
 if ! grep -q "$PLUGIN_ID" "$inspect_file"; then
   printf 'runtime inspect output did not mention plugin id %s\n' "$PLUGIN_ID" >&2
   exit 10
+fi
+if ! grep -q '"status": "loaded"' "$inspect_file"; then
+  printf 'runtime inspect output did not show status: loaded\n' >&2
+  exit 11
+fi
+if ! grep -q '"before_tool_call"' "$inspect_file"; then
+  printf 'runtime inspect output did not show before_tool_call hook\n' >&2
+  exit 12
+fi
+if grep -q 'allowConversationAccess=true' "$inspect_file"; then
+  cat <<'EOF'
+
+Note:
+The approval gate is loaded. OpenClaw reports that finalize reflection needs
+plugins.entries.next-right-thing.hooks.allowConversationAccess=true.
+EOF
 fi
 
 log "Enabled plugin list"

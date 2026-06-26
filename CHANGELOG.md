@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-25
+
+### Fixed
+
+- Verification script now sets `TMPDIR` inside `~/.openclaw` when unset, avoiding
+  OpenClaw git-plugin install failures on hosts where `/tmp` and `~/.openclaw`
+  are different filesystems.
+- Verification script now fails closed unless runtime inspect reports the plugin
+  loaded and the `before_tool_call` hook registered.
+
 ## [0.3.2] - 2026-06-25
 
 ### Fixed
