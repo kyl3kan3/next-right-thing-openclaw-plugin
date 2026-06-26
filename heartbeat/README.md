@@ -49,7 +49,7 @@ that routes to an agent run (confirm exact field names against your version):
 {
   hooks: {
     enabled: true,
-    token: "a-long-random-shared-secret",
+    // Set hooks.token from your secret manager.
     path: "/hooks",
     mappings: [
       { match: { path: "heartbeat" }, action: "agent", agentId: "main", deliver: true }

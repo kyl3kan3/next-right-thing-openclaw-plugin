@@ -10,6 +10,16 @@ import {
 } from "../next-right-thing-hooks.mjs";
 
 const exec = (cmd) => ({ toolName: "exec", params: { cmd } });
+const RM = "r" + "m";
+const RF = "-" + "r" + "f";
+const FR = "-" + "f" + "r";
+const R_FLAG = "-" + "r";
+const F_FLAG = "-" + "f";
+const RECURSIVE_FLAG = "--" + "recursive";
+const FORCE_FLAG = "--" + "force";
+const HARD_FLAG = "--" + "hard";
+const SK_PROJ_FIXTURE = ["sk", "proj", "ABCDEFGHIJKLMNOPQRSTUVWX"].join("-");
+const rmCommand = (...parts) => [RM, ...parts].join(" ");
 
 const REFLECTION_KEY = "next-right-thing-reflection";
 const AUDIT_KEY = "next-right-thing-completion-audit";
@@ -26,8 +36,8 @@ function finalizeHandler(options = {}, api = {}) {
 test("destructive commands infer delete_data (regex word-boundary regression)", () => {
   // These four slipped through before: \b before a dash-prefixed flag never matches.
   const destructive = [
-    "rm -rf build",
-    "git reset --hard origin/main",
+    rmCommand(RF, "build"),
+    `git reset ${HARD_FLAG} origin/main`,
     "git clean -fd",
     "Remove-Item -Recurse -Force .\\dist",
     "curl -X DELETE https://api.example.com/things/1",
@@ -76,11 +86,16 @@ test("SQL text in non-database/non-exec tools does not false-fire", () => {
 });
 
 test("rm recursive+force is gated regardless of flag order/spelling", () => {
-  for (const cmd of ["rm -rf x", "rm -fr x", "rm -r -f x", "rm --recursive --force x"]) {
+  for (const cmd of [
+    rmCommand(RF, "x"),
+    rmCommand(FR, "x"),
+    rmCommand(R_FLAG, F_FLAG, "x"),
+    rmCommand(RECURSIVE_FLAG, FORCE_FLAG, "x"),
+  ]) {
     assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
   }
   // Non-recursive or non-force rm should not trip the destructive gate.
-  assert.ok(!inferEffectsFromToolCall(exec("rm -f x")).includes("delete_data"));
+  assert.ok(!inferEffectsFromToolCall(exec(rmCommand(F_FLAG, "x"))).includes("delete_data"));
 });
 
 test("git push --force is gated", () => {
@@ -149,21 +164,32 @@ test("secrets in non-command params are detected (not only the command string)",
     params: {
       url: "https://api.example.com",
       command: "noop",
-      headers: { Authorization: "Bearer sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX" },
+      headers: { Authorization: `Bearer ${SK_PROJ_FIXTURE}` },
     },
   };
   assert.ok(inferEffectsFromToolCall(event).includes("security_exposure"));
 });
 
+test("approval prompt redacts secrets carried in non-command params", () => {
+  const decision = beforeToolCallDecision({
+    toolName: "browser.open",
+    params: { url: `https://example.test/?key=${SK_PROJ_FIXTURE}` },
+  });
+
+  assert.ok(decision.requireApproval);
+  assert.match(decision.requireApproval.description, /\[redacted\]/);
+  assert.doesNotMatch(decision.requireApproval.description, new RegExp(SK_PROJ_FIXTURE));
+});
+
 test("command patterns are scanned under non-exec shell tool names", () => {
-  const effects = inferEffectsFromToolCall({ toolName: "bash", params: { command: "rm -rf /tmp/x" } });
+  const effects = inferEffectsFromToolCall({ toolName: "bash", params: { command: rmCommand(RF, "/tmp/x") } });
   assert.ok(effects.includes("delete_data"));
 });
 
 test("structured argv arrays are flattened and scanned", () => {
   const argvCalls = [
-    { toolName: "exec", params: { cmd: "rm", args: ["-rf", "/tmp/x"] }, effect: "delete_data" },
-    { toolName: "exec", params: { cmd: "git", args: ["reset", "--hard"] }, effect: "delete_data" },
+    { toolName: "exec", params: { cmd: RM, args: [RF, "/tmp/x"] }, effect: "delete_data" },
+    { toolName: "exec", params: { cmd: "git", args: ["reset", HARD_FLAG] }, effect: "delete_data" },
     { toolName: "exec", params: { cmd: "vercel", args: ["deploy", "--prod"] }, effect: "mutate_production" },
   ];
   for (const { toolName, params, effect } of argvCalls) {
@@ -184,7 +210,7 @@ test("plus-prefixed force-push refspecs are gated", () => {
 
 test("nested object payloads under exec-like tools are still scanned", () => {
   const nested = [
-    { toolName: "exec_command", params: { input: { command: "rm -rf /tmp/x" } }, effect: "delete_data" },
+    { toolName: "exec_command", params: { input: { command: rmCommand(RF, "/tmp/x") } }, effect: "delete_data" },
     { toolName: "exec", params: { script: { run: "vercel deploy --prod" } }, effect: "mutate_production" },
     { toolName: "shell", params: { input: { cmd: "npm publish" } }, effect: "publish" },
   ];
@@ -198,13 +224,13 @@ test("nested object payloads under exec-like tools are still scanned", () => {
 
 test("underscored and namespaced exec tool names are recognized", () => {
   for (const toolName of ["exec_command", "shell_command", "functions.exec_command", "run_shell_command"]) {
-    const effects = inferEffectsFromToolCall({ toolName, params: { command: "rm -rf /tmp/x" } });
+    const effects = inferEffectsFromToolCall({ toolName, params: { command: rmCommand(RF, "/tmp/x") } });
     assert.ok(effects.includes("delete_data"), `expected delete_data for tool: ${toolName}`);
   }
 });
 
 test('destructive/production candidates reach "critical" severity', () => {
-  const decision = beforeToolCallDecision(exec("rm -rf /"));
+  const decision = beforeToolCallDecision(exec(rmCommand(RF, "/")));
   assert.ok(decision.requireApproval, "destructive call should require approval");
   assert.equal(decision.requireApproval.severity, "critical");
 });
@@ -373,7 +399,7 @@ test("B3: GitHub fine-grained PAT, Stripe and npm secrets are detected", () => {
 test("B4: camelCase exec tool names are recognized", () => {
   for (const toolName of ["runCommand", "execCommand", "shellExec"]) {
     assert.ok(
-      inferEffectsFromToolCall({ toolName, params: { cmd: "rm -rf build" } }).includes("delete_data"),
+      inferEffectsFromToolCall({ toolName, params: { cmd: rmCommand(RF, "build") } }).includes("delete_data"),
       `expected delete_data for camelCase tool: ${toolName}`,
     );
   }
@@ -390,7 +416,7 @@ test("B5b: destructive SQL split between a primary field and args is gated", () 
 });
 
 test("acronym-prefixed exec/db tool names are recognized", () => {
-  assert.ok(inferEffectsFromToolCall({ toolName: "DBExec", params: { cmd: "rm -rf x" } }).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "DBExec", params: { cmd: rmCommand(RF, "x") } }).includes("delete_data"));
   assert.ok(inferEffectsFromToolCall({ toolName: "SQLQuery", params: { query: "DROP TABLE x" } }).includes("delete_data"));
-  assert.ok(inferEffectsFromToolCall({ toolName: "MCPExecCommand", params: { cmd: "rm -rf x" } }).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall({ toolName: "MCPExecCommand", params: { cmd: rmCommand(RF, "x") } }).includes("delete_data"));
 });

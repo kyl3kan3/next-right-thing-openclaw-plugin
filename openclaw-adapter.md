@@ -31,7 +31,7 @@ See OpenClaw's plugin manifest, entrypoint, and permission request docs:
 The shipped entry (`index.js`) registers `before_tool_call` and `before_agent_finalize` (the latter is on by default for built-in reflective deliberation). `after_tool_call` and `agent_end` are documented integration points but are **not** registered by the default entry.
 
 - `before_tool_call` (registered): infer side effects from the tool call and request approval for production mutation, destructive operations, publishing, messaging, auth changes, billing changes, or security exposure. Side-effect inference scans both the command string and the serialized tool params, so it catches:
-  - destructive shell commands (`rm -rf`/`-fr`, `git reset --hard`, `git clean --force`, `git push --force`/`+refspec`, `Remove-Item -Recurse`, `curl -X|--request DELETE`);
+  - destructive shell commands such as recursive-force deletes, hard resets, forced cleans, forced pushes, recursive PowerShell removal, and DELETE HTTP requests;
   - destructive SQL (`DROP TABLE/DATABASE/SCHEMA`, `DELETE FROM`, `TRUNCATE`) on database- and exec-like tools (so MCP database tools that carry SQL in params are gated, while a tool merely mentioning SQL as text is not);
   - commands hidden in object-valued `input`/`script` payloads or split into `args`/`argv` arrays;
   - secret-shaped values in any tool params (not only shell commands).

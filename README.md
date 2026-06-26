@@ -7,14 +7,14 @@ It adds approval gates around risky tool calls and a completion-audit hook surfa
 ## Install
 
 ```bash
-openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@main
+openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.3.0-openclaw
 openclaw plugins enable next-right-thing
 openclaw gateway restart
 openclaw plugins inspect next-right-thing --runtime --json
 ```
 
-> Installs the latest `main`. To pin to a release instead, replace `@main` with a
-> published tag (e.g. `@v0.2.2-openclaw`).
+> Installs the current stable release. To test unreleased changes instead, replace
+> the tag with `@main`.
 
 ### Required: grant conversation access (one line)
 
@@ -90,7 +90,7 @@ asks once and then lets finalize proceed — never an infinite loop. Set
 `reflection.enabled: false` (statically or at the plugin level) to turn it off; that is a
 startup decision, so a per-call `event.context.pluginConfig` override can disable or tune
 reflection for a turn but cannot re-enable it when it is globally off. If you also wire a `loadCompletionAudit`
-function (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
+callback (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
 precedence over the built-in reflection; the two use distinct idempotency keys.
 
 ## Autonomous operation (optional)
