@@ -15,11 +15,13 @@ Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced t
   tools. Mass `UPDATE … SET` (→ `overwrite_data`), `ALTER TABLE … DROP` (→ `overwrite_data`),
   `GRANT`/`REVOKE` (→ `change_permissions`), and `CREATE`/`DROP`/`ALTER ROLE|USER` (→ `change_auth`)
   now infer their proper HARD_EFFECT and require **critical** approval — closing privilege-escalation
-  (`GRANT … TO anon`), auth-tampering (`DROP ROLE`), and mass-mutation paths.
+  (`GRANT … TO anon`), auth-tampering (`DROP ROLE`), and mass-mutation paths, including aliased
+  `UPDATE users u SET …` / `UPDATE users AS u SET …`.
 - **Irreversible shell primitives other than `rm -rf` were silently allowed.** `dd … of=`, `mkfs`,
-  `shred`/`wipefs`/`blkdiscard`, `find … -delete`, `truncate -s`, data-file truncation via redirect
-  (`> app.sqlite`), and **recursive `rm` without `-f`** now infer `delete_data` and gate as critical.
-  Benign look-alikes (`rm file`, `rm -f tmp`, `echo > out.txt`, `dd --help`) still pass.
+  `shred`/`wipefs`/`blkdiscard`, `find … -delete`, `truncate -s`/`-s0`/`--size=`, data-file truncation
+  via redirect (`> app.sqlite`), redirect to a raw block device (`> /dev/sda`, no `of=`), and
+  **recursive `rm` without `-f`** now infer `delete_data` and gate as critical. Benign look-alikes
+  (`rm file`, `rm -f tmp`, `echo > out.txt`, `> /dev/null`, `dd --help`) still pass.
 
 ### Added
 

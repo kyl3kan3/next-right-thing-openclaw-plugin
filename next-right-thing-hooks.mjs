@@ -142,9 +142,13 @@ const DESTRUCTIVE_PATTERNS = [
   /\bmkfs(?:\.\w+)?\b/i,
   /\b(?:shred|wipefs|blkdiscard)\b/i,
   /\bfind\b[\s\S]*\s-delete\b/i,
-  /\btruncate\b\s+-s\b/i,
+  // truncate shrinks/zeroes a file; cover spaced and compact size forms (`-s 0`, `-s0`, `--size=0`).
+  /\btruncate\b\s+(?:-s|--size)/i,
   // Truncation-via-redirect of a data file (e.g. `cat /dev/null > app.sqlite`).
   />\s*\S*\.(?:db|sqlite3?|sql|dump|bak)\b/i,
+  // Redirect to a raw block device (e.g. `dd if=/dev/zero > /dev/sda`, with no of=) —
+  // an allowlist of device names so benign `> /dev/null` / `> /dev/stdout` never gate.
+  />\s*\/dev\/(?:sd[a-z]|nvme\d|vd[a-z]|hd[a-z]|mmcblk\d|xvd[a-z]|disk\d|loop\d)/i,
 ];
 
 // Destructive/mutating SQL by the HARD_EFFECT each statement implies. Tool-agnostic:
@@ -157,7 +161,7 @@ const SQL_EFFECT_PATTERNS = [
   [/\bDROP\s+(?:TABLE|DATABASE|SCHEMA|VIEW|INDEX|SEQUENCE)\b/i, "delete_data"],
   [/\bDELETE\s+FROM\b/i, "delete_data"],
   [/\bTRUNCATE\s+(?:TABLE\s+)?\w/i, "delete_data"],
-  [/\bUPDATE\s+\S+\s+SET\b/i, "overwrite_data"],
+  [/\bUPDATE\s+\S+(?:\s+(?:AS\s+)?\S+)?\s+SET\b/i, "overwrite_data"],
   [/\bALTER\s+TABLE\b[\s\S]*\bDROP\b/i, "overwrite_data"],
   [/\b(?:GRANT|REVOKE)\b/i, "change_permissions"],
   [/\b(?:CREATE|DROP|ALTER)\s+(?:ROLE|USER|GROUP)\b/i, "change_auth"],

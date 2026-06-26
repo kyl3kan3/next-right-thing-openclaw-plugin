@@ -424,6 +424,8 @@ test("acronym-prefixed exec/db tool names are recognized", () => {
 test("B7: destructive SQL beyond DROP/DELETE/TRUNCATE infers the right HARD_EFFECT and gates", () => {
   const cases = [
     ["UPDATE users SET role='admin' WHERE 1=1", "overwrite_data"],
+    ["UPDATE users u SET role='admin' WHERE 1=1", "overwrite_data"], // table alias
+    ["UPDATE users AS u SET role='admin'", "overwrite_data"], // AS alias
     ["ALTER TABLE accounts DROP COLUMN balance", "overwrite_data"],
     ["GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO anon", "change_permissions"],
     ["REVOKE SELECT ON accounts FROM analyst", "change_permissions"],
@@ -445,18 +447,21 @@ test("B7: destructive SQL beyond DROP/DELETE/TRUNCATE infers the right HARD_EFFE
 test("B8: irreversible shell primitives beyond rm -rf are gated", () => {
   const destructive = [
     "dd if=/dev/zero of=/dev/sda bs=1M",
+    "dd if=/dev/zero > /dev/sda", // redirect to device, no of=
     "mkfs.ext4 /dev/sdb1",
     "shred -uvz /var/data/x.db",
     "find /srv -name '*.bak' -delete",
     rmCommand(R_FLAG, "/var/www/html"), // recursive WITHOUT force
     "cat /dev/null > production.sqlite",
+    "truncate -s0 production.sqlite", // compact size form (no space)
+    "truncate --size=0 data.bin",
   ];
   for (const cmd of destructive) {
     assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
     assert.equal(beforeToolCallDecision(exec(cmd))?.requireApproval?.severity, "critical", `expected critical for: ${cmd}`);
   }
   // non-destructive look-alikes must NOT gate
-  for (const cmd of ["dd --help", rmCommand(F_FLAG, "/tmp/x"), "echo hello > out.txt", "rm file.txt"]) {
+  for (const cmd of ["dd --help", rmCommand(F_FLAG, "/tmp/x"), "echo hello > out.txt", "rm file.txt", "echo done > /dev/null", "cat log > /dev/stdout"]) {
     assert.equal(beforeToolCallDecision(exec(cmd)), undefined, `should allow: ${cmd}`);
   }
 });
