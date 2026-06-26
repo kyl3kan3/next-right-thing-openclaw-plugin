@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **End-to-end test (`heartbeat/e2e.test.mjs`).** Drives the whole chain the way OpenClaw does, in one
+  process: composes a layered prompt from seeded state and dispatches it over a real loopback HTTP POST to
+  a stub gateway hooks endpoint, then exercises the plugin's **registered** hook lifecycle
+  (`createNextRightThingPlugin` → `api.on(...)` → invoke the registered handlers) — covering the
+  approval gate (critical vs allow), the one-shot finalize reflection (stable idempotency key, cannot
+  loop), per-call `pluginConfig` precedence (`approvalTimeoutMs`, per-turn reflection disable), the
+  conversation-access registration guard (no finalize hook when reflection is off and no audit is wired),
+  and audit-vs-reflection composition (audit revise outranks reflection; never a double-revise).
+- **Live heartbeat smoke script (`heartbeat/scripts/live-smoke.mjs`, manual).** Sends one harmless POST to
+  the gateway hooks endpoint from your real `heartbeat/config.json` to verify the heartbeat → gateway
+  webhook path on a machine with a running OpenClaw gateway. Complements `scripts/verify-openclaw-install.sh`
+  (which verifies the plugin loads and its hooks register). Not run in CI.
+
 ## [0.3.4] - 2026-06-26
 
 ### Changed
