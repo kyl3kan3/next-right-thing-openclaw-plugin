@@ -163,7 +163,10 @@ const SQL_EFFECT_PATTERNS = [
   [/\bTRUNCATE\s+(?:TABLE\s+)?\w/i, "delete_data"],
   [/\bUPDATE\s+\S+(?:\s+(?:AS\s+)?\S+)?\s+SET\b/i, "overwrite_data"],
   [/\bALTER\s+TABLE\b[\s\S]*\bDROP\b/i, "overwrite_data"],
-  [/\b(?:GRANT|REVOKE)\b/i, "change_permissions"],
+  // Anchor to statement structure (ON/TO/FROM) so a bare "grant"/"revoke" token in an
+  // exec command (e.g. `aws kms create-grant`, `./grant-access.sh`) does not false-fire.
+  [/\bGRANT\b[\s\S]*\b(?:ON|TO)\b/i, "change_permissions"],
+  [/\bREVOKE\b[\s\S]*\b(?:ON|FROM)\b/i, "change_permissions"],
   [/\b(?:CREATE|DROP|ALTER)\s+(?:ROLE|USER|GROUP)\b/i, "change_auth"],
 ];
 

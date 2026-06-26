@@ -60,7 +60,8 @@ if (trigger.type !== "http") {
 }
 
 const { url, init } = buildRequest(HARMLESS_PROMPT, trigger);
-const hasAuth = Object.keys(init.headers).some((h) => h.toLowerCase() === "authorization");
+// Normalize via Headers so the check is robust to absent / non-plain-object headers.
+const hasAuth = new Headers(init.headers ?? {}).has("authorization");
 if (!hasAuth) {
   console.warn("⚠ no Authorization header configured — most gateway hooks endpoints require a bearer token.");
 }
@@ -70,7 +71,8 @@ console.log(`  prompt: ${HARMLESS_PROMPT}`);
 
 let res;
 try {
-  res = await fetch(url, init);
+  // Bound the request so a gateway that accepts the socket but never replies can't hang.
+  res = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
 } catch (err) {
   fail(
     `Could not reach the gateway at ${url}: ${err.message}\n` +

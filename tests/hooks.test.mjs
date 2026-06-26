@@ -442,6 +442,10 @@ test("B7: destructive SQL beyond DROP/DELETE/TRUNCATE infers the right HARD_EFFE
   for (const sql of ["SELECT * FROM users", "INSERT INTO logs VALUES (1)", "CREATE TABLE t (id int)"]) {
     assert.equal(beforeToolCallDecision({ toolName: "mcp__supabase__execute_sql", params: { query: sql } }), undefined, `should allow: ${sql}`);
   }
+  // a bare grant/revoke TOKEN in an exec command (not a SQL statement) must NOT false-fire
+  for (const cmd of ["aws kms create-grant --key-id k", "./grant-access.sh deploy", "revoke-cert --serial 5"]) {
+    assert.equal(beforeToolCallDecision(exec(cmd)), undefined, `should allow non-SQL grant/revoke: ${cmd}`);
+  }
 });
 
 test("B8: irreversible shell primitives beyond rm -rf are gated", () => {
