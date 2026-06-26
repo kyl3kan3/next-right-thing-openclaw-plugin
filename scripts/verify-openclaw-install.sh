@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PLUGIN_ID="${PLUGIN_ID:-next-right-thing}"
-PLUGIN_REF="${PLUGIN_REF:-v0.3.0-openclaw}"
+PLUGIN_REF="${PLUGIN_REF:-v0.3.2-openclaw}"
 PLUGIN_SPEC="${PLUGIN_SPEC:-git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@${PLUGIN_REF}}"
 SKIP_RESTART="${SKIP_RESTART:-0}"
 

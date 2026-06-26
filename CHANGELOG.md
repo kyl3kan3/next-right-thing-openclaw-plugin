@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-25
+
+### Fixed
+
+- Verification script now defaults to the current release tag.
+
 ## [0.3.1] - 2026-06-25
 
 ### Added
