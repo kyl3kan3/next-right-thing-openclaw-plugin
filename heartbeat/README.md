@@ -82,6 +82,20 @@ carries across ticks.
 > `{ "type": "command", "command": ["your-cli", "..."], "promptVia": "stdin" }` instead. The stock
 > `openclaw` binary does not, so the webhook above is the OpenClaw-native path.
 
+### Live smoke test (one POST to your real gateway)
+
+Once the trigger is wired, confirm the heartbeat → gateway webhook path end to end with a single,
+harmless POST (it asks the agent to reply `OK` and do nothing else):
+
+```bash
+node heartbeat/scripts/live-smoke.mjs
+```
+
+A `2xx` means your gateway accepts the heartbeat's trigger. `401/403` → token mismatch; `404` → the
+hooks path/mapping name doesn't match. This covers the *continuation* layer; pair it with
+`scripts/verify-openclaw-install.sh` (which confirms the *plugin* loads and its hooks register) for a
+full live end-to-end check. Neither runs in CI — both need a real OpenClaw gateway.
+
 ## Run
 
 ```bash

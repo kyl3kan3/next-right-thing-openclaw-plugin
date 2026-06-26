@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed (effect-inference completeness — found by the E2E adversarial workflow)
+
+Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced through the
+**registered** `before_tool_call` handler and fixed with regression tests (B7/B8):
+
+- **Destructive SQL beyond `DROP`/`DELETE`/`TRUNCATE` was silently allowed** on recognized database
+  tools. Mass `UPDATE … SET` (→ `overwrite_data`), `ALTER TABLE … DROP` (→ `overwrite_data`),
+  `GRANT`/`REVOKE` (→ `change_permissions`), and `CREATE`/`DROP`/`ALTER ROLE|USER` (→ `change_auth`)
+  now infer their proper HARD_EFFECT and require **critical** approval — closing privilege-escalation
+  (`GRANT … TO anon`), auth-tampering (`DROP ROLE`), and mass-mutation paths, including aliased
+  `UPDATE users u SET …` / `UPDATE users AS u SET …`.
+- **Irreversible shell primitives other than `rm -rf` were silently allowed.** `dd … of=`, `mkfs`,
+  `shred`/`wipefs`/`blkdiscard`, `find … -delete`, `truncate -s`/`-s0`/`--size=`, data-file truncation
+  via redirect (`> app.sqlite`), redirect to a raw block device (`> /dev/sda`, no `of=`), and
+  **recursive `rm` without `-f`** now infer `delete_data` and gate as critical. Benign look-alikes
+  (`rm file`, `rm -f tmp`, `echo > out.txt`, `> /dev/null`, `dd --help`) still pass.
+
+### Added
+
+- **End-to-end test (`heartbeat/e2e.test.mjs`).** Drives the whole chain the way OpenClaw does, in one
+  process: composes a layered prompt from seeded state and dispatches it over a real loopback HTTP POST to
+  a stub gateway hooks endpoint, then exercises the plugin's **registered** hook lifecycle
+  (`createNextRightThingPlugin` → `api.on(...)` → invoke the registered handlers) — covering the
+  approval gate (critical vs allow), the one-shot finalize reflection (stable idempotency key, cannot
+  loop), per-call `pluginConfig` precedence (`approvalTimeoutMs`, per-turn reflection disable), the
+  conversation-access registration guard (no finalize hook when reflection is off and no audit is wired),
+  and audit-vs-reflection composition (audit revise outranks reflection; never a double-revise).
+- **Live heartbeat smoke script (`heartbeat/scripts/live-smoke.mjs`, manual).** Sends one harmless POST to
+  the gateway hooks endpoint from your real `heartbeat/config.json` to verify the heartbeat → gateway
+  webhook path on a machine with a running OpenClaw gateway. Complements `scripts/verify-openclaw-install.sh`
+  (which verifies the plugin loads and its hooks register). Not run in CI.
+
 ## [0.3.4] - 2026-06-26
 
 ### Changed

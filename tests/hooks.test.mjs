@@ -420,3 +420,52 @@ test("acronym-prefixed exec/db tool names are recognized", () => {
   assert.ok(inferEffectsFromToolCall({ toolName: "SQLQuery", params: { query: "DROP TABLE x" } }).includes("delete_data"));
   assert.ok(inferEffectsFromToolCall({ toolName: "MCPExecCommand", params: { cmd: rmCommand(RF, "x") } }).includes("delete_data"));
 });
+
+test("B7: destructive SQL beyond DROP/DELETE/TRUNCATE infers the right HARD_EFFECT and gates", () => {
+  const cases = [
+    ["UPDATE users SET role='admin' WHERE 1=1", "overwrite_data"],
+    ["UPDATE users u SET role='admin' WHERE 1=1", "overwrite_data"], // table alias
+    ["UPDATE users AS u SET role='admin'", "overwrite_data"], // AS alias
+    ["ALTER TABLE accounts DROP COLUMN balance", "overwrite_data"],
+    ["GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO anon", "change_permissions"],
+    ["REVOKE SELECT ON accounts FROM analyst", "change_permissions"],
+    ["DROP ROLE app_owner", "change_auth"],
+    ["CREATE USER mallory WITH SUPERUSER", "change_auth"],
+  ];
+  for (const [sql, effect] of cases) {
+    const call = { toolName: "mcp__supabase__execute_sql", params: { query: sql } };
+    assert.ok(inferEffectsFromToolCall(call).includes(effect), `expected ${effect} for: ${sql}`);
+    // these are auth/privilege/overwrite escalations — critical, not a soft warning
+    assert.equal(beforeToolCallDecision(call)?.requireApproval?.severity, "critical", `expected critical for: ${sql}`);
+  }
+  // benign reads/writes on the same DB tool must NOT gate
+  for (const sql of ["SELECT * FROM users", "INSERT INTO logs VALUES (1)", "CREATE TABLE t (id int)"]) {
+    assert.equal(beforeToolCallDecision({ toolName: "mcp__supabase__execute_sql", params: { query: sql } }), undefined, `should allow: ${sql}`);
+  }
+  // a bare grant/revoke TOKEN in an exec command (not a SQL statement) must NOT false-fire
+  for (const cmd of ["aws kms create-grant --key-id k", "./grant-access.sh deploy", "revoke-cert --serial 5"]) {
+    assert.equal(beforeToolCallDecision(exec(cmd)), undefined, `should allow non-SQL grant/revoke: ${cmd}`);
+  }
+});
+
+test("B8: irreversible shell primitives beyond rm -rf are gated", () => {
+  const destructive = [
+    "dd if=/dev/zero of=/dev/sda bs=1M",
+    "dd if=/dev/zero > /dev/sda", // redirect to device, no of=
+    "mkfs.ext4 /dev/sdb1",
+    "shred -uvz /var/data/x.db",
+    "find /srv -name '*.bak' -delete",
+    rmCommand(R_FLAG, "/var/www/html"), // recursive WITHOUT force
+    "cat /dev/null > production.sqlite",
+    "truncate -s0 production.sqlite", // compact size form (no space)
+    "truncate --size=0 data.bin",
+  ];
+  for (const cmd of destructive) {
+    assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
+    assert.equal(beforeToolCallDecision(exec(cmd))?.requireApproval?.severity, "critical", `expected critical for: ${cmd}`);
+  }
+  // non-destructive look-alikes must NOT gate
+  for (const cmd of ["dd --help", rmCommand(F_FLAG, "/tmp/x"), "echo hello > out.txt", "rm file.txt", "echo done > /dev/null", "cat log > /dev/stdout"]) {
+    assert.equal(beforeToolCallDecision(exec(cmd)), undefined, `should allow: ${cmd}`);
+  }
+});
