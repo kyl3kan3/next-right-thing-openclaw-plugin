@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 
 PLUGIN_ID="${PLUGIN_ID:-next-right-thing}"
-PLUGIN_REF="${PLUGIN_REF:-v0.3.3-openclaw}"
+PLUGIN_REF="${PLUGIN_REF:-v0.3.4-openclaw}"
 PLUGIN_SPEC="${PLUGIN_SPEC:-git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@${PLUGIN_REF}}"
 SKIP_RESTART="${SKIP_RESTART:-0}"
+REQUIRE_SAFE_EXEC_POLICY="${REQUIRE_SAFE_EXEC_POLICY:-1}"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 
 log() {
@@ -43,7 +44,8 @@ else
 fi
 
 inspect_file="$(mktemp)"
-trap 'rm -f "$inspect_file"' EXIT
+policy_file="$(mktemp)"
+trap 'rm -f "$inspect_file" "$policy_file"' EXIT
 
 log "Inspect plugin runtime"
 openclaw plugins inspect "$PLUGIN_ID" --runtime --json | tee "$inspect_file"
@@ -69,6 +71,38 @@ plugins.entries.next-right-thing.hooks.allowConversationAccess=true.
 EOF
 fi
 
+log "Inspect OpenClaw exec policy"
+if openclaw approvals get >"$policy_file" 2>&1; then
+  cat "$policy_file"
+  if grep -q 'security=full' "$policy_file" && grep -q 'ask=off' "$policy_file"; then
+    cat <<'EOF' >&2
+
+Unsafe exec policy detected:
+At least one OpenClaw exec policy still shows security=full and ask=off.
+
+The next-right-thing before_tool_call hook covers OpenClaw-owned dynamic tools.
+Claude CLI/native shell execution is governed by OpenClaw's native exec policy,
+so YOLO exec mode can bypass this plugin's approval prompt.
+
+Recommended hardening:
+  openclaw config patch --stdin <<'JSON'
+  {"tools":{"exec":{"security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+  JSON
+
+Also update any agents.list[].tools.exec overrides that still set
+security=full or ask=off, then restart the gateway.
+
+Set REQUIRE_SAFE_EXEC_POLICY=0 to skip this verifier gate.
+EOF
+    if [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ]; then
+      exit 13
+    fi
+  fi
+else
+  printf 'warning: could not inspect OpenClaw exec policy\n' >&2
+  cat "$policy_file" >&2 || true
+fi
+
 log "Enabled plugin list"
 openclaw plugins list --enabled --verbose
 
@@ -76,9 +110,16 @@ cat <<'EOF'
 
 Manual smoke prompt to run in OpenClaw:
 
+Run a safe command first, then a gated action.
+
+Safe:
+Run: npm test
+
+Gated:
 Run: vercel deploy --prod
 
 Expected result:
-OpenClaw should show a next-right-thing approval prompt instead of executing directly.
-The approval should deny by default on timeout.
+OpenClaw-owned tools should show a next-right-thing approval prompt instead of
+executing directly. Claude CLI/native shell commands should be blocked or routed
+through OpenClaw's native exec approval policy unless explicitly approved.
 EOF

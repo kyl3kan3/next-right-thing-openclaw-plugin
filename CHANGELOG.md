@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-06-26
+
+### Changed
+
+- Documented the OpenClaw native-runtime boundary: `before_tool_call` gates
+  OpenClaw-owned dynamic tools, while Claude CLI/native shell execution is
+  governed by OpenClaw's native exec policy.
+- Verification script now fails by default when it detects unsafe exec policy
+  (`security=full` plus `ask=off`), because that setup can bypass the plugin for
+  Claude CLI native shell commands. Set `REQUIRE_SAFE_EXEC_POLICY=0` to inspect
+  hook registration only.
+
 ## [0.3.3] - 2026-06-25
 
 ### Fixed

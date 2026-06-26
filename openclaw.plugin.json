@@ -1,7 +1,7 @@
 {
   "id": "next-right-thing",
   "name": "Next Right Thing",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Hook-based OpenClaw adapter for the Next Right Thing protocol.",
   "configSchema": {
     "type": "object",

@@ -7,7 +7,7 @@ It adds approval gates around risky tool calls and a completion-audit hook surfa
 ## Install
 
 ```bash
-openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.3.3-openclaw
+openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.3.4-openclaw
 openclaw plugins enable next-right-thing
 openclaw gateway restart
 openclaw plugins inspect next-right-thing --runtime --json
@@ -36,9 +36,32 @@ Without it the approval gate still works, but the reflection step stays off. See
 On the OpenClaw host, run the packaged verification script:
 
 ```bash
-curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/kyl3kan3/next-right-thing-openclaw-plugin/v0.3.3-openclaw/scripts/verify-openclaw-install.sh
+curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/kyl3kan3/next-right-thing-openclaw-plugin/v0.3.4-openclaw/scripts/verify-openclaw-install.sh
 bash /tmp/verify-openclaw-install.sh
 ```
+
+### Required for Claude CLI/native shell safety
+
+`before_tool_call` wraps OpenClaw-owned dynamic tools. On OpenClaw setups where
+an external runtime owns native shell execution, such as Claude CLI, shell
+commands are governed by OpenClaw's native exec policy. Do not leave that policy
+in YOLO mode (`security=full`, `ask=off`) if you expect destructive shell
+commands to be blocked.
+
+Recommended baseline:
+
+```bash
+openclaw config patch --stdin <<'JSON'
+{"tools":{"exec":{"security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+JSON
+openclaw gateway restart
+```
+
+If your agents have `agents.list[].tools.exec` overrides, set those overrides to
+the same `security=allowlist`, `ask=on-miss`, and `strictInlineEval=true` values.
+The verification script fails by default when it sees `security=full` plus
+`ask=off`; set `REQUIRE_SAFE_EXEC_POLICY=0` only when you intentionally want to
+test hook registration without hardening native exec.
 
 Ask OpenClaw to run a safe command first:
 
@@ -52,7 +75,9 @@ Then test a gated action:
 Run: vercel deploy --prod
 ```
 
-Expected result: OpenClaw asks for approval instead of executing directly.
+Expected result: OpenClaw-owned tools ask for a next-right-thing approval instead
+of executing directly. Claude CLI/native shell commands should be blocked or
+sent through OpenClaw's native exec approval policy unless explicitly approved.
 
 ## Configuration
 
