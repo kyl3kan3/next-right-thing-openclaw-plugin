@@ -7,7 +7,7 @@ It adds approval gates around risky tool calls and a completion-audit hook surfa
 ## Install
 
 ```bash
-openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.3.0-openclaw
+openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.3.1-openclaw
 openclaw plugins enable next-right-thing
 openclaw gateway restart
 openclaw plugins inspect next-right-thing --runtime --json
@@ -32,6 +32,13 @@ Without it the approval gate still works, but the reflection step stays off. See
 [Configuration](#configuration) for the full options.
 
 ## Smoke Test
+
+On the OpenClaw host, run the packaged verification script:
+
+```bash
+curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/kyl3kan3/next-right-thing-openclaw-plugin/v0.3.1-openclaw/scripts/verify-openclaw-install.sh
+bash /tmp/verify-openclaw-install.sh
+```
 
 Ask OpenClaw to run a safe command first:
 

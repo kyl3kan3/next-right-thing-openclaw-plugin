@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-25
+
+### Added
+
+- Host-side verification script for cloud/OpenClaw-PI installs. It installs the
+  tagged plugin, enables it, restarts the gateway, inspects runtime state, and
+  prints the manual approval-gate smoke prompt.
+
 ### Fixed (adversarial-test hardening)
 
 An adversarial test workflow found and reproduced six gate bypasses; all are fixed
