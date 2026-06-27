@@ -55,18 +55,24 @@ Approval prompts are deliberately bounded for OpenClaw approval surfaces:
 
 ### Native runtime boundary
 
-OpenClaw runtimes that own their own native shell tools may not route those
-calls through plugin `before_tool_call`. The default configuration still lets
-those models run under the NRT prompt context; it does not hard-block a model
-just because it is Claude CLI or another CLI backend.
+OpenClaw runtimes that own their own native shell tools must route those calls
+through the gateway/native relay before plugin `before_tool_call` can see them.
+On OpenClaw 2026.6.10, the Codex app-server harness exposes that bridge through
+`openclaw hooks relay`; configure exec with `tools.exec.host="gateway"` so native
+Codex `PreToolUse` events can reach the same NRT approval gate as
+OpenClaw-owned dynamic tools. The default configuration still lets those models
+run under the NRT prompt context; it does not hard-block a model just because it
+is Claude CLI or another CLI backend.
 
 If you require hard host-level tool coverage, configure strict
 `runtimeCoverage` blocking for the relevant runtime/provider ids, or require
 runtime identity with `allowUnidentifiedRuntime: false`. In all cases, keep
-`tools.exec.security=allowlist` with `tools.exec.ask=on-miss` or stricter, and
-apply the same values to any `agents.list[].tools.exec` overrides. If the
-effective policy remains `security=full` and `ask=off`, destructive native CLI
-shell commands can execute without `before_tool_call` seeing them.
+`tools.exec.host=gateway`, `tools.exec.security=allowlist`,
+`tools.exec.ask=on-miss`, and `tools.exec.strictInlineEval=true` or stricter,
+and apply the same values to any `agents.list[].tools.exec` overrides. If the
+effective policy remains local/native or `security=full` and `ask=off`,
+destructive native CLI shell commands can execute without `before_tool_call`
+seeing them.
 
 When testing through `openclaw agent --json`, do not count a result with
 `meta.fallbackFrom: "gateway"` as coverage evidence. That means the Gateway

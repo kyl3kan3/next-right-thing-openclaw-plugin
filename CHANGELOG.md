@@ -34,6 +34,11 @@ Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced t
   `openclaw agent --json` results with `meta.fallbackFrom: "gateway"` are not
   valid hook-coverage evidence; restart the Gateway or force `--local` before
   trusting the smoke.
+- **Native hook relay verification.** The install verifier now requires
+  gateway-hosted exec routing (`tools.exec.host="gateway"`), `strictInlineEval`,
+  and the `openclaw hooks relay` command by default, so Codex app-server native
+  shell calls can reach OpenClaw's `before_tool_call` policy instead of running
+  under a local/native bypass.
 - **Model-agnostic NRT run context.** The default entry now registers
   `before_prompt_build` to inject the Next Right Thing operating context for any
   model that reaches OpenClaw's hook runner. `before_agent_run` remains the

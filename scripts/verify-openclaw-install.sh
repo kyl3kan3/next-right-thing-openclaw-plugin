@@ -6,6 +6,8 @@ PLUGIN_REF="${PLUGIN_REF:-v0.3.4-openclaw}"
 PLUGIN_SPEC="${PLUGIN_SPEC:-git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@${PLUGIN_REF}}"
 SKIP_RESTART="${SKIP_RESTART:-0}"
 REQUIRE_SAFE_EXEC_POLICY="${REQUIRE_SAFE_EXEC_POLICY:-1}"
+REQUIRE_GATEWAY_EXEC_HOST="${REQUIRE_GATEWAY_EXEC_HOST:-1}"
+REQUIRE_NATIVE_HOOK_RELAY="${REQUIRE_NATIVE_HOOK_RELAY:-1}"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 
 log() {
@@ -45,7 +47,9 @@ fi
 
 inspect_file="$(mktemp)"
 policy_file="$(mktemp)"
-trap 'rm -f "$inspect_file" "$policy_file"' EXIT
+exec_config_file="$(mktemp)"
+relay_help_file="$(mktemp)"
+trap 'rm -f "$inspect_file" "$policy_file" "$exec_config_file" "$relay_help_file"' EXIT
 
 log "Inspect plugin runtime"
 openclaw plugins inspect "$PLUGIN_ID" --runtime --json | tee "$inspect_file"
@@ -98,11 +102,11 @@ mode can bypass this plugin's tool approval prompt.
 
 Recommended hardening:
   openclaw config patch --stdin <<'JSON'
-  {"tools":{"exec":{"security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+  {"tools":{"exec":{"host":"gateway","security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
   JSON
 
 Also update any agents.list[].tools.exec overrides that still set
-security=full or ask=off, then restart the gateway.
+host=local, security=full, or ask=off, then restart the gateway.
 
 Set REQUIRE_SAFE_EXEC_POLICY=0 to skip this verifier gate.
 EOF
@@ -113,6 +117,68 @@ EOF
 else
   printf 'warning: could not inspect OpenClaw exec policy\n' >&2
   cat "$policy_file" >&2 || true
+fi
+
+log "Inspect OpenClaw exec host routing"
+if openclaw config get tools.exec >"$exec_config_file" 2>&1; then
+  cat "$exec_config_file"
+  if [ "$REQUIRE_GATEWAY_EXEC_HOST" = "1" ] && ! grep -Eq '"host"[[:space:]]*:[[:space:]]*"gateway"' "$exec_config_file"; then
+    cat <<'EOF' >&2
+
+Gateway exec routing is not enabled:
+tools.exec.host must be "gateway" so Codex/OpenClaw native shell execution is
+routed through the gateway-owned policy and native hook relay surfaces.
+
+Recommended hardening:
+  openclaw config patch --stdin <<'JSON'
+  {"tools":{"exec":{"host":"gateway","security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+  JSON
+
+Set REQUIRE_GATEWAY_EXEC_HOST=0 to skip this verifier gate.
+EOF
+    exit 17
+  fi
+  if [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ] && ! grep -Eq '"strictInlineEval"[[:space:]]*:[[:space:]]*true' "$exec_config_file"; then
+    cat <<'EOF' >&2
+
+strictInlineEval is not enabled:
+Set tools.exec.strictInlineEval=true so inline shell evaluation remains inside
+the OpenClaw exec policy boundary.
+
+Set REQUIRE_SAFE_EXEC_POLICY=0 to skip this verifier gate.
+EOF
+    exit 18
+  fi
+else
+  printf 'warning: could not inspect OpenClaw tools.exec config\n' >&2
+  cat "$exec_config_file" >&2 || true
+  if [ "$REQUIRE_GATEWAY_EXEC_HOST" = "1" ] || [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ]; then
+    exit 21
+  fi
+fi
+
+log "Inspect native hook relay command"
+if openclaw hooks relay --help >"$relay_help_file" 2>&1; then
+  cat "$relay_help_file"
+  if ! grep -q 'Internal native harness hook relay' "$relay_help_file"; then
+    printf 'native hook relay help did not identify the relay command\n' >&2
+    if [ "$REQUIRE_NATIVE_HOOK_RELAY" = "1" ]; then
+      exit 19
+    fi
+  fi
+else
+  cat "$relay_help_file" >&2 || true
+  if [ "$REQUIRE_NATIVE_HOOK_RELAY" = "1" ]; then
+    cat <<'EOF' >&2
+
+Native hook relay command is unavailable:
+OpenClaw must expose `openclaw hooks relay` for Codex app-server native hooks to
+bridge PreToolUse/PostToolUse/Stop events into registered plugin policy.
+
+Set REQUIRE_NATIVE_HOOK_RELAY=0 to skip this verifier gate.
+EOF
+    exit 20
+  fi
 fi
 
 log "Enabled plugin list"
@@ -133,8 +199,11 @@ Run: vercel deploy --prod
 Expected result:
 Any model that reaches OpenClaw's hook runner should receive the Next Right
 Thing run context. OpenClaw-owned tools should show a next-right-thing approval
-prompt instead of executing directly. Runtime/provider ids are blocked before
-inference only when strict runtimeCoverage blocking is explicitly configured.
+prompt instead of executing directly. Codex app-server native shell tools must
+also be gateway-routed (`tools.exec.host="gateway"`) so their native hooks can
+call `openclaw hooks relay` and reach the same pre-tool policy. Runtime/provider
+ids are blocked before inference only when strict runtimeCoverage blocking is
+explicitly configured.
 
 For CLI JSON smoke tests, use a healthy Gateway or force the embedded local
 runner with `openclaw agent --local --json ...`. If the result reports

@@ -66,30 +66,34 @@ surface. If you need strict host-level tool coverage, configure
 `runtimeCoverage.allowUnidentifiedRuntime: false` to block specific uncovered
 paths before inference.
 
-For host runtimes that own native shell execution outside OpenClaw's hook relay,
-keep OpenClaw's native exec policy out of YOLO mode (`security=full`, `ask=off`)
-so destructive shell commands still require approval.
-On OpenClaw 2026.6.10, live testing showed the Codex app-server `shell_command`
-/ `bash` bridge can execute native shell deletion under YOLO without a
-`before_tool_call` plugin approval, so treat the native exec policy as the hard
-backstop for that path.
+For host runtimes that own native shell execution, route exec through the
+OpenClaw gateway and keep the native exec policy out of YOLO mode
+(`security=full`, `ask=off`). On OpenClaw 2026.6.10 the Codex app-server harness
+can bridge native `PreToolUse` / `PostToolUse` / `Stop` callbacks into OpenClaw
+with `openclaw hooks relay`; that relay is what lets native shell calls reach
+the same `before_tool_call` policy used by OpenClaw-owned dynamic tools. If exec
+is left on a local/native host or YOLO policy, destructive shell commands can
+execute without this plugin's approval prompt.
 
 Recommended baseline:
 
 ```bash
 openclaw config patch --stdin <<'JSON'
-{"tools":{"exec":{"security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+{"tools":{"exec":{"host":"gateway","security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
 JSON
 openclaw gateway restart
 ```
 
 If your agents have `agents.list[].tools.exec` overrides, set those overrides to
-the same `security=allowlist`, `ask=on-miss`, and `strictInlineEval=true` values.
+the same `host=gateway`, `security=allowlist`, `ask=on-miss`, and
+`strictInlineEval=true` values.
 The verification script fails by default unless runtime inspect shows the
 `before_prompt_build` run-context hook, the `before_agent_run` coverage gate,
 and the `before_tool_call` approval gate. It also fails when it sees
-`security=full` plus `ask=off`; set
-`REQUIRE_SAFE_EXEC_POLICY=0` only when you intentionally want to test hook
+`security=full` plus `ask=off`, when `tools.exec.host` is not `gateway`, when
+`strictInlineEval` is not enabled, or when `openclaw hooks relay` is unavailable.
+Set `REQUIRE_SAFE_EXEC_POLICY=0`, `REQUIRE_GATEWAY_EXEC_HOST=0`, or
+`REQUIRE_NATIVE_HOOK_RELAY=0` only when you intentionally want to test hook
 registration without hardening native exec.
 
 Ask OpenClaw to run a safe command first:
