@@ -280,9 +280,15 @@ test("approvalTimeoutMs config is threaded into the approval prompt", async () =
   assert.equal(perCall.requireApproval.timeoutMs, 23_456);
 });
 
-test("reflective deliberation is registered and revises on finalize by default", async () => {
-  const handler = finalizeHandler(); // no loadCompletionAudit, no reflection config
-  assert.ok(handler, "before_agent_finalize should be registered by default");
+test("reflection is OFF by default: a plain install claims no finalize hook", () => {
+  // Default-off is the refocus: the approval gate alone needs no conversation-access
+  // grant, and a bare install does not register before_agent_finalize at all.
+  assert.equal(finalizeHandler(), undefined);
+});
+
+test("opt-in reflection registers and revises on finalize", async () => {
+  const handler = finalizeHandler({ reflection: { enabled: true } });
+  assert.ok(handler, "explicit reflection.enabled:true registers before_agent_finalize");
   const decision = await handler.handler({});
   assert.equal(decision.action, "revise");
   assert.equal(decision.retry.maxAttempts, 1);
@@ -291,7 +297,7 @@ test("reflective deliberation is registered and revises on finalize by default",
 });
 
 test("reflection instruction names the review lenses in priority order", async () => {
-  const handler = finalizeHandler({}, { pluginConfig: { reflection: { reviewRoles: ["security"] } } });
+  const handler = finalizeHandler({}, { pluginConfig: { reflection: { enabled: true, reviewRoles: ["security"] } } });
   const { instruction } = (await handler.handler({})).retry;
   for (const lens of ["critic", "security", "verifier"]) {
     assert.ok(instruction.includes(lens), `instruction should mention ${lens}`);
@@ -306,14 +312,14 @@ test("reflection disabled statically skips finalize registration when no audit",
 });
 
 test("reflection disabled per-call allows finalize (returns undefined)", async () => {
-  const handler = finalizeHandler(); // enabled by default -> hook registered
+  const handler = finalizeHandler({ reflection: { enabled: true } }); // opt-in -> hook registered
   assert.ok(handler);
   const decision = await handler.handler({ context: { pluginConfig: { reflection: { enabled: false } } } });
   assert.equal(decision, undefined);
 });
 
 test("per-call reflection config overrides plugin-level", async () => {
-  const handler = finalizeHandler({}, { pluginConfig: { reflection: { maxAttempts: 1 } } });
+  const handler = finalizeHandler({}, { pluginConfig: { reflection: { enabled: true, maxAttempts: 1 } } });
   const decision = await handler.handler({ context: { pluginConfig: { reflection: { maxAttempts: 3 } } } });
   assert.equal(decision.retry.maxAttempts, 3);
 });
@@ -329,23 +335,31 @@ test("loadCompletionAudit composes ahead of reflection (audit wins, distinct key
   assert.equal(d1.action, "revise");
   assert.equal(d1.retry.idempotencyKey, AUDIT_KEY);
 
-  // A complete audit falls through to the built-in reflection.
-  const complete = finalizeHandler({ loadCompletionAudit: async () => ({ status: "complete" }) });
+  // With an audit wired AND reflection opted in, a complete audit falls through to reflection.
+  const complete = finalizeHandler({
+    loadCompletionAudit: async () => ({ status: "complete" }),
+    reflection: { enabled: true },
+  });
   const d2 = await complete.handler({});
   assert.equal(d2.action, "revise");
   assert.equal(d2.retry.idempotencyKey, REFLECTION_KEY);
+
+  // An audit wired WITHOUT opting into reflection: a complete audit just proceeds (no reflection tax).
+  const auditOnly = finalizeHandler({ loadCompletionAudit: async () => ({ status: "complete" }) });
+  assert.equal(await auditOnly.handler({}), undefined);
 });
 
-test("reflectiveFinalizeDecision rejects unknown review roles", () => {
-  assert.throws(() => reflectiveFinalizeDecision({}, { reviewRoles: ["bogus"] }), TypeError);
+test("reflectiveFinalizeDecision is inert unless enabled, and validates roles when enabled", () => {
+  assert.equal(reflectiveFinalizeDecision({}, {}), undefined); // opt-in: off by default
+  assert.throws(() => reflectiveFinalizeDecision({}, { enabled: true, reviewRoles: ["bogus"] }), TypeError);
 });
 
-test("reflection maxAttempts defaults to 1 and is configurable", () => {
-  assert.equal(reflectiveFinalizeDecision({}, {}).retry.maxAttempts, 1);
-  assert.equal(reflectiveFinalizeDecision({}, { maxAttempts: 2 }).retry.maxAttempts, 2);
+test("reflection maxAttempts defaults to 1 and is configurable (when enabled)", () => {
+  assert.equal(reflectiveFinalizeDecision({}, { enabled: true }).retry.maxAttempts, 1);
+  assert.equal(reflectiveFinalizeDecision({}, { enabled: true, maxAttempts: 2 }).retry.maxAttempts, 2);
 });
 
-test("default configSchema exposes the reflection knob", () => {
+test("default configSchema exposes the reflection knob (default off)", () => {
   const entry = createNextRightThingPlugin((e) => e, {});
   const reflection = entry.configSchema.properties.reflection;
   assert.ok(reflection);
@@ -353,7 +367,7 @@ test("default configSchema exposes the reflection knob", () => {
   assert.ok(reflection.properties.reviewRoles);
   assert.ok(reflection.properties.maxAttempts);
   // Documented defaults are encoded for schema consumers / config UIs.
-  assert.equal(reflection.properties.enabled.default, true);
+  assert.equal(reflection.properties.enabled.default, false);
   assert.equal(reflection.properties.maxAttempts.default, 1);
 });
 

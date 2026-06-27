@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed (refocus on the original two-hook goal)
+
+A "rethink" review found the project had drifted from its original purpose — a reactive guardrail
+(approval gate + completion check) that wraps prepared turns and never drives the agent. This pass
+steers back without removing working code:
+
+- **Built-in finalize reflection now defaults to OFF (opt-in).** `reflection.enabled` defaults to
+  `false` across all four configSchemas and the runtime. A plain install registers only the
+  `before_tool_call` approval gate and therefore needs **no `allowConversationAccess` grant** — the
+  gate works out of the box. Reflection is reframed as the no-runtime fallback for `loadCompletionAudit`:
+  turn it on with `reflection.enabled: true` (or wire an audit) when you want the finalize check. The
+  one-shot mechanics, idempotency keys, and audit-outranks-reflection composition are unchanged.
+- **Docs reframed to "two reactive guardrails, never drives."** README leads with the two hooks and
+  marks the `heartbeat/` companion as a *separate* autonomous driver (not part of the plugin runtime),
+  intended for extraction into its own `next-right-thing-heartbeat` package.
+
 ### Fixed (effect-inference completeness — found by the E2E adversarial workflow)
 
 Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced through the

@@ -18,8 +18,8 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "default": true,
-            "description": "Enable the built-in reflective deliberation on finalize (default true)."
+            "default": false,
+            "description": "Opt in to built-in reflective deliberation on finalize (default false; the no-runtime fallback for loadCompletionAudit). Requires hooks.allowConversationAccess."
           },
           "reviewRoles": {
             "type": "array",

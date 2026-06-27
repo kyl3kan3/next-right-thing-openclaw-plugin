@@ -122,9 +122,10 @@ test("E2E: the registered before_tool_call hook gates a risky action and allows 
   assert.equal(benign, undefined, "a harmless read passes the gate silently");
 });
 
-test("E2E: the registered before_agent_finalize hook forces a one-shot reflection that cannot loop", async () => {
-  const { finalizeHook } = registerPlugin();
-  assert.ok(finalizeHook, "finalize gate is registered by default");
+test("E2E: opting into reflection registers a one-shot finalize revise that cannot loop", async () => {
+  // Reflection is opt-in (off by default); enable it to exercise the finalize gate.
+  const { finalizeHook } = registerPlugin({ reflection: { enabled: true } });
+  assert.ok(finalizeHook, "opt-in reflection registers the finalize gate");
 
   const first = await finalizeHook({});
   assert.equal(first?.action, "revise");
@@ -139,7 +140,7 @@ test("E2E: the registered before_agent_finalize hook forces a one-shot reflectio
 });
 
 test("E2E: per-call pluginConfig flows through the registered surface (timeout threads in, reflection can disable)", async () => {
-  const { toolHook, finalizeHook } = registerPlugin();
+  const { toolHook, finalizeHook } = registerPlugin({ reflection: { enabled: true } });
 
   // approvalTimeoutMs supplied per-call is honored on the produced approval.
   const gated = await toolHook({
@@ -155,13 +156,17 @@ test("E2E: per-call pluginConfig flows through the registered surface (timeout t
   assert.equal(quiet, undefined, "per-call reflection.enabled:false suppresses the revise");
 });
 
-test("E2E: with reflection globally off and no audit loader, the finalize hook is NOT registered (guards conversation-access)", () => {
-  const { names } = registerPlugin({ reflection: { enabled: false } });
-  assert.ok(names.includes("before_tool_call"), "the approval gate still loads");
-  assert.ok(
-    !names.includes("before_agent_finalize"),
-    "a deliberately-off plugin does not claim the conversation-access finalize hook for a no-op",
-  );
+test("E2E: by default (reflection off, no audit loader) the finalize hook is NOT registered (guards conversation-access)", () => {
+  // Default install AND explicit-off both claim only the approval gate, never the
+  // conversation-access finalize hook for a no-op.
+  for (const opts of [{}, { reflection: { enabled: false } }]) {
+    const { names } = registerPlugin(opts);
+    assert.ok(names.includes("before_tool_call"), "the approval gate still loads");
+    assert.ok(
+      !names.includes("before_agent_finalize"),
+      "a guardrail-only plugin does not claim the conversation-access finalize hook",
+    );
+  }
 });
 
 test("E2E: a wired completion audit composes AHEAD of reflection, and they never double-revise", async () => {
@@ -177,9 +182,10 @@ test("E2E: a wired completion audit composes AHEAD of reflection, and they never
   assert.equal(audited.retry.idempotencyKey, AUDIT_KEY, "audit revise outranks reflection");
   assert.match(audited.retry.instruction, /production proof/);
 
-  // Audit says complete → audit yields nothing, so built-in reflection runs instead.
+  // Audit complete + reflection opted in → audit yields nothing, so reflection runs instead.
   const complete = registerPlugin({
     loadCompletionAudit: async () => ({ status: "complete", requirements: [] }),
+    reflection: { enabled: true },
   });
   const reflected = await complete.finalizeHook({});
   assert.equal(reflected?.action, "revise");

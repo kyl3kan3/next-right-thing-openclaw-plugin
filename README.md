@@ -1,8 +1,16 @@
 # Next Right Thing OpenClaw Plugin
 
-OpenClaw hook plugin for the Next Right Thing protocol.
+A single, dependency-free OpenClaw hook plugin with **two reactive guardrails**:
 
-It adds approval gates around risky tool calls and a completion-audit hook surface for agents that should keep moving while preserving evidence, verification, and safety.
+1. **`before_tool_call` — an approval gate** that pauses for human approval before risky or
+   irreversible actions (destructive shell, destructive SQL, production deploys, secret exposure)
+   and blocks calls that do not move the active goal forward.
+2. **`before_agent_finalize` — a completion check** that won't let the agent claim "done" without
+   proven evidence (via a wired `loadCompletionAudit`, with an optional built-in reflection fallback).
+
+It **wraps prepared turns and never drives the agent** — it restrains, it does not push. (For an
+optional autonomous *driver*, see the separate [`heartbeat/`](#autonomous-operation-separate-companion)
+companion below — it is deliberately not part of the plugin's hook runtime.)
 
 ## Install
 
@@ -16,20 +24,13 @@ openclaw plugins inspect next-right-thing --runtime --json
 > Installs the current stable release. To test unreleased changes instead, replace
 > the tag with `@main`.
 
-### Required: grant conversation access (one line)
+The approval gate works out of the box — **no extra permission grant required**. A plain install
+registers only `before_tool_call`, so there is nothing to enable.
 
-The reflective-deliberation feature runs on the `before_agent_finalize` hook, which
-OpenClaw gates behind an operator-granted permission. It cannot be auto-enabled by the
-plugin — add this once to your OpenClaw config so the contemplation actually fires:
-
-```json
-{ "plugins": { "entries": { "next-right-thing": {
-  "hooks": { "allowConversationAccess": true }
-} } } }
-```
-
-Without it the approval gate still works, but the reflection step stays off. See
-[Configuration](#configuration) for the full options.
+> **Only if you opt into the finalize check** (`reflection.enabled: true`, or a wired
+> `loadCompletionAudit`): OpenClaw gates `before_agent_finalize` behind an operator-granted
+> permission, so add `hooks.allowConversationAccess: true` once. Skip this for a gate-only install.
+> See [Configuration](#configuration).
 
 ## Smoke Test
 
@@ -86,9 +87,11 @@ Config knobs are set under the plugin's entry in your OpenClaw config:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `approvalTimeoutMs` | integer (ms) | `60000` | How long to wait for an approval decision before denying. Times out to **deny** (fail-safe). |
-| `reflection.enabled` | boolean | `true` | Master switch for the built-in reflective deliberation (below). |
+| `reflection.enabled` | boolean | `false` | **Opt-in.** Turns on the built-in reflective deliberation (below) — the no-runtime fallback for `loadCompletionAudit`. |
 | `reflection.reviewRoles` | string[] | `[]` | Extra review lenses to include — any of `critic`, `verifier`, `security`, `fact_checker`, `memory_curator`. |
 | `reflection.maxAttempts` | integer ≥ 1 | `1` | How many times to ask the model to reflect before letting it finalize. |
+
+A gate-only install needs no `config` block at all. To opt into the finalize reflection:
 
 ```json
 { "plugins": { "entries": { "next-right-thing": {
@@ -100,38 +103,38 @@ Config knobs are set under the plugin's entry in your OpenClaw config:
 } } } }
 ```
 
-> **Required for the finalize reflection.** OpenClaw gates `before_agent_finalize`
-> behind a conversation-access permission, so a non-bundled plugin must set
-> `hooks.allowConversationAccess: true` on its entry (alongside `config`). Without
-> it the approval gate still works, but the reflection hook never runs. See
-> OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
+> **`hooks.allowConversationAccess` is required only when the finalize check is active**
+> (`reflection.enabled: true` or a wired `loadCompletionAudit`). OpenClaw gates
+> `before_agent_finalize` behind that conversation-access permission. A gate-only install never
+> registers that hook, so it needs no grant. See OpenClaw's
+> [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
 
-## Reflective Deliberation
+## Completion check & reflective deliberation (opt-in)
 
-By default — with **no** external runtime — the plugin makes the agent *contemplate
-before it finalizes*. On the agent's first attempt to declare it is done, the
-`before_agent_finalize` hook returns one `revise` that asks the model to:
+The second guardrail keeps the agent from claiming "done" prematurely. There are two ways to wire it,
+and **both are off until you turn them on**:
 
-1. restate the active goal in one sentence,
-2. state the concrete evidence that it is actually done,
-3. if it is not fully done, name at least one **next right thing** and do it, and
-4. self-review through the configured review lenses (`critic`, `verifier`, …).
+- **Evidence audit (preferred):** wire a `loadCompletionAudit` callback (see `plugin-entry.example.ts`).
+  On finalize it inspects your real completion evidence and returns a `revise` listing what is unproven.
+- **Built-in reflection (no-runtime fallback):** set `reflection.enabled: true`. On the agent's first
+  finalize attempt the `before_agent_finalize` hook returns one `revise` asking the model to (1) restate
+  the active goal, (2) state the concrete evidence it is done, (3) if not, name the **next right thing**
+  and do it, and (4) self-review through the configured lenses (`critic`, `verifier`, …).
 
-It is a **one-shot** (`reflection.maxAttempts: 1` with a stable idempotency key), so it
-asks once and then lets finalize proceed — never an infinite loop. Set
-`reflection.enabled: false` (statically or at the plugin level) to turn it off; that is a
-startup decision, so a per-call `event.context.pluginConfig` override can disable or tune
-reflection for a turn but cannot re-enable it when it is globally off. If you also wire a `loadCompletionAudit`
-callback (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
-precedence over the built-in reflection; the two use distinct idempotency keys.
+The reflection is a **one-shot** (`reflection.maxAttempts: 1` with a stable idempotency key) — it asks
+once, then lets finalize proceed, never an infinite loop. Whether the finalize hook is registered at all
+is a startup decision (audit wired, or `reflection.enabled: true`), so a per-call override can disable or
+tune it but cannot resurrect it when off. When both are wired, the evidence audit `revise` outranks the
+built-in reflection; they use distinct idempotency keys and never double-revise.
 
-## Autonomous operation (optional)
+## Autonomous operation (separate companion)
 
-The plugin keeps each turn honest but does not *drive* the agent — OpenClaw acts only when
-prompted. For an agent that **keeps doing the next right thing on its own**, the optional
-[`heartbeat/`](heartbeat/README.md) companion periodically prompts your gateway from a layered
-goal model (mission + backlog + recent context), with this plugin gating risk on every turn it
-triggers. It ships idle and dry-run by default. See [`heartbeat/README.md`](heartbeat/README.md).
+This plugin is a **reactive guardrail** — it wraps prepared turns and never drives the agent. If you also
+want something that *drives* an agent to keep acting on its own, that is a **different tool**: the optional
+[`heartbeat/`](heartbeat/README.md) companion in this repo is a standalone gateway client (not a hook, not
+part of the plugin runtime) that periodically prompts your gateway from a layered goal model, with this
+plugin gating risk on every turn it triggers. It ships idle and dry-run by default and is intended to be
+extracted into its own package. See [`heartbeat/README.md`](heartbeat/README.md).
 
 ## Tests
 

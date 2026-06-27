@@ -584,7 +584,9 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
  * @returns {object|undefined} A revise decision, or `undefined` to allow finalize.
  */
 export function reflectiveFinalizeDecision(event, options = {}) {
-  if (!normalizeBoolean(options.enabled, true)) {
+  // Opt-in: reflection fires only when explicitly enabled. It is the no-runtime
+  // fallback for `loadCompletionAudit`, not a default tax on every finalize.
+  if (!normalizeBoolean(options.enabled, false)) {
     return undefined;
   }
 
@@ -643,7 +645,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean", default: true },
+              enabled: { type: "boolean", default: false },
               reviewRoles: {
                 type: "array",
                 items: {
@@ -670,12 +672,13 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       // per-call (event.context.pluginConfig) > plugin-level (api.pluginConfig) > static
       // options.reflection > built-in defaults — resolved per-call in the handler below.
       // Whether the finalize hook is REGISTERED at all is a startup decision from the
-      // static/plugin `enabled` flag (default true) or a wired audit loader: a per-call
-      // override can disable or tune reflection on a registered hook, but cannot register
-      // it when reflection is globally disabled. This keeps a deliberately-off plugin from
-      // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
+      // static/plugin `enabled` flag (default FALSE — reflection is opt-in) or a wired
+      // audit loader: a per-call override can disable or tune reflection on a registered
+      // hook, but cannot register it when reflection is globally disabled. So a plain
+      // install claims NO `before_agent_finalize` (conversation-access) hook until you
+      // opt in or wire an audit — the gate alone needs no conversation-access grant.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
-      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
+      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, false);
 
       api.on(
         "before_tool_call",
@@ -692,9 +695,9 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       );
 
       // Register the finalize gate when an external audit is wired OR built-in
-      // reflection is enabled (the default). The handler composes them: a real audit
-      // revise outranks reflection, and the two use distinct idempotency keys so the
-      // host never double-revises.
+      // reflection is explicitly enabled (off by default). The handler composes them: a
+      // real audit revise outranks reflection, and the two use distinct idempotency keys
+      // so the host never double-revises.
       if (typeof options.loadCompletionAudit === "function" || reflectionEnabled) {
         api.on(
           "before_agent_finalize",
