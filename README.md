@@ -69,6 +69,10 @@ paths before inference.
 For host runtimes that own native shell execution outside OpenClaw's hook relay,
 keep OpenClaw's native exec policy out of YOLO mode (`security=full`, `ask=off`)
 so destructive shell commands still require approval.
+On OpenClaw 2026.6.10, live testing showed the Codex app-server `shell_command`
+/ `bash` bridge can execute native shell deletion under YOLO without a
+`before_tool_call` plugin approval, so treat the native exec policy as the hard
+backstop for that path.
 
 Recommended baseline:
 

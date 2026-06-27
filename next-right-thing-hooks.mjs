@@ -140,10 +140,11 @@ const PRODUCTION_PATTERNS = [
 ];
 
 const DESTRUCTIVE_PATTERNS = [
-  // Recursion is the irreversible part of `rm`, so gate it whether or not -f is also
-  // present (-f only suppresses prompts; `rm -r dir` still destroys a tree).
+  // File deletion is destructive even when it is a single target. Gate `rm`
+  // unless it is plainly a help invocation.
+  /(?:^|[\s"';&|])rm(?:\.exe)?\b(?!\s+(?:--help|-h)\b)(?=\s+\S)/i,
   /\brm\b(?=.*(?:\s-[a-z]*r|\s--recursive))/i,
-  /\bRemove-Item\b.*\s-Recurse\b/i,
+  /\b(?:Remove-Item|del|erase|unlink)\b(?![\s\S]*\s-(?:WhatIf|Confirm)\b)/i,
   /\bgit\b.*\breset\b.*\s--hard\b/i,
   /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
   /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b|\s\+\S)/i,
@@ -215,8 +216,12 @@ function stringifyParams(params) {
   }
 }
 
+function eventParams(event) {
+  return event?.params ?? event?.arguments ?? event?.input ?? {};
+}
+
 function commandText(event) {
-  const params = event?.params ?? {};
+  const params = eventParams(event);
   return String(params.cmd ?? params.command ?? params.input ?? params.script ?? stringifyParams(params));
 }
 
@@ -483,17 +488,18 @@ function mergeReviewRoles(defaults, requested) {
  * @returns {string[]} A sorted, de-duplicated list of inferred effect identifiers.
  */
 export function inferEffectsFromToolCall(event) {
-  const toolName = String(event?.toolName ?? "");
-  const toolKind = String(event?.toolKind ?? event?.ctx?.toolKind ?? "");
+  const toolName = String(event?.toolName ?? event?.name ?? event?.tool?.name ?? "");
+  const toolKind = String(event?.toolKind ?? event?.kind ?? event?.ctx?.toolKind ?? "");
   const text = commandText(event);
-  const allParamsText = stringifyParams(event?.params);
+  const params = eventParams(event);
+  const allParamsText = stringifyParams(params);
   // Normalize JSON punctuation AND escaped whitespace (\n, \t, \r) to spaces, so a
   // command/SQL split across keys or an argv array, or carried as a multiline string,
   // still reads as spaced text the patterns can match.
   const normalizedParams = allParamsText.replace(/\\[ntr]/g, " ").replace(/[{}[\],:"]/g, " ");
   // Param VALUES joined by spaces — catches a command/SQL split across a primary field
   // and an args array (the JSON key names are dropped, unlike normalizedParams).
-  const valuesText = flattenParamValues(event?.params).join(" ");
+  const valuesText = flattenParamValues(params).join(" ");
   const lowerToolName = toolName.toLowerCase();
   const effects = new Set();
 
@@ -584,9 +590,10 @@ export function buildToolCandidate(event, overrides = {}) {
   const risk = highSeverity ? 5 : effects.length > 0 ? 4 : 1;
   const irreversibility = highSeverity ? 4 : 1;
   const approvalRequired = effects.some((effect) => HARD_EFFECTS.has(effect));
+  const toolName = String(event?.toolName ?? event?.name ?? "unknown");
   const candidate = {
-    id: overrides.id ?? `${event?.toolCallId ?? event?.runId ?? event?.toolName ?? "tool"}-candidate`,
-    title: overrides.title ?? `Run tool: ${String(event?.toolName ?? "unknown")}`,
+    id: overrides.id ?? `${event?.toolCallId ?? event?.runId ?? event?.toolName ?? event?.name ?? "tool"}-candidate`,
+    title: overrides.title ?? `Run tool: ${toolName}`,
     description: overrides.description ?? redactSecrets(commandText(event)).slice(0, 500),
     value: overrides.value ?? 3,
     urgency: overrides.urgency ?? 2,

@@ -96,8 +96,7 @@ test("rm recursive+force is gated regardless of flag order/spelling", () => {
   ]) {
     assert.ok(inferEffectsFromToolCall(exec(cmd)).includes("delete_data"), `expected delete_data for: ${cmd}`);
   }
-  // Non-recursive or non-force rm should not trip the destructive gate.
-  assert.ok(!inferEffectsFromToolCall(exec(rmCommand(F_FLAG, "x"))).includes("delete_data"));
+  assert.ok(inferEffectsFromToolCall(exec(rmCommand(F_FLAG, "x"))).includes("delete_data"));
 });
 
 test("git push --force is gated", () => {
@@ -186,6 +185,14 @@ test("approval prompt redacts secrets carried in non-command params", () => {
 test("command patterns are scanned under non-exec shell tool names", () => {
   const effects = inferEffectsFromToolCall({ toolName: "bash", params: { command: rmCommand(RF, "/tmp/x") } });
   assert.ok(effects.includes("delete_data"));
+});
+
+test("Codex shell bridge single-file deletes are gated", () => {
+  const command =
+    "\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -Command \"Remove-Item -LiteralPath C:\\tmp\\victim.txt -Force\"";
+  const event = { name: "bash", input: { command, cwd: "C:\\tmp" } };
+  assert.ok(inferEffectsFromToolCall(event).includes("delete_data"));
+  assert.equal(beforeToolCallDecision(event)?.requireApproval?.severity, "critical");
 });
 
 test("structured argv arrays are flattened and scanned", () => {
@@ -516,7 +523,11 @@ test("B8: irreversible shell primitives beyond rm -rf are gated", () => {
     "mkfs.ext4 /dev/sdb1",
     "shred -uvz /var/data/x.db",
     "find /srv -name '*.bak' -delete",
+    rmCommand(F_FLAG, "/tmp/x"),
+    "rm file.txt",
     rmCommand(R_FLAG, "/var/www/html"), // recursive WITHOUT force
+    "Remove-Item -LiteralPath .\\victim.txt -Force",
+    "del victim.txt",
     "cat /dev/null > production.sqlite",
     "truncate -s0 production.sqlite", // compact size form (no space)
     "truncate --size=0 data.bin",
@@ -526,7 +537,7 @@ test("B8: irreversible shell primitives beyond rm -rf are gated", () => {
     assert.equal(beforeToolCallDecision(exec(cmd))?.requireApproval?.severity, "critical", `expected critical for: ${cmd}`);
   }
   // non-destructive look-alikes must NOT gate
-  for (const cmd of ["dd --help", rmCommand(F_FLAG, "/tmp/x"), "echo hello > out.txt", "rm file.txt", "echo done > /dev/null", "cat log > /dev/stdout"]) {
+  for (const cmd of ["dd --help", "rm --help", "Remove-Item -WhatIf victim.txt", "echo hello > out.txt", "echo done > /dev/null", "cat log > /dev/stdout"]) {
     assert.equal(beforeToolCallDecision(exec(cmd)), undefined, `should allow: ${cmd}`);
   }
 });
