@@ -2,9 +2,10 @@
 
 OpenClaw hook plugin for the Next Right Thing protocol.
 
-It adds approval gates around risky tool calls, a fail-closed runtime coverage
-gate, and a completion-audit hook surface for agents that should keep moving
-while preserving evidence, verification, and safety.
+It adds a model-agnostic Next Right Thing run context, approval gates around
+risky tool calls, a runtime coverage preflight, and a completion-audit hook
+surface for agents that should keep moving while preserving evidence,
+verification, and safety.
 
 ## Install
 
@@ -18,22 +19,23 @@ openclaw plugins inspect next-right-thing --runtime --json
 > Installs the current stable release. To test unreleased changes instead, replace
 > the tag with `@main`.
 
-### Required: grant conversation access (one line)
+### Required: grant hook permissions (one line)
 
-The runtime-coverage and reflective-deliberation features run on
-`before_agent_run` and `before_agent_finalize`, which OpenClaw gates behind an
-operator-granted permission. It cannot be auto-enabled by the plugin -- add this
-once to your OpenClaw config so the safety layer actually fires before inference:
+The model-agnostic run context uses `before_prompt_build`; runtime coverage and
+reflective deliberation use `before_agent_run` and `before_agent_finalize`.
+OpenClaw gates those surfaces behind operator-granted permissions. They cannot
+be auto-enabled by the plugin -- add this once to your OpenClaw config so the
+NRT layer actually fires across models:
 
 ```json
 { "plugins": { "entries": { "next-right-thing": {
-  "hooks": { "allowConversationAccess": true }
+  "hooks": { "allowPromptInjection": true, "allowConversationAccess": true }
 } } } }
 ```
 
-Without it OpenClaw-owned tool-call approval still works, but runtime coverage
-and reflection stay off. See [Configuration](#configuration) for the full
-options.
+Without it OpenClaw-owned tool-call approval still works, but the run context,
+runtime coverage, and reflection stay off. See [Configuration](#configuration)
+for the full options.
 
 ## Smoke Test
 
@@ -50,17 +52,23 @@ runner with `openclaw agent --local --json ...`. If a JSON result reports
 automatic fallback path; restart the Gateway and rerun before treating the smoke
 as evidence of hook coverage.
 
-### Required for runtime and native shell safety
+### Runtime and native shell safety
 
-`before_agent_run` is the always-on safety layer: by default it allows
-hook-covered embedded runtimes and blocks known uncovered runtime paths such as
-`claude-cli`/`anthropic-cli`, plus unidentified runtime paths. `before_tool_call`
-then wraps OpenClaw-owned dynamic tools that do reach the hook surface.
+`before_prompt_build` injects the Next Right Thing operating context for any
+model that reaches OpenClaw's hook runner. `before_agent_run` is the preflight
+that proves the plugin layer was invoked before inference; by default it is
+model-agnostic and does **not** block Claude CLI, Anthropic, OpenAI, or
+unidentified runtimes merely because of their model/provider id.
 
-If you intentionally disable or relax `runtimeCoverage`, or run a host runtime
-that owns native shell execution outside OpenClaw's hook relay, keep OpenClaw's
-native exec policy out of YOLO mode (`security=full`, `ask=off`) so destructive
-shell commands still require approval.
+`before_tool_call` then wraps OpenClaw-owned dynamic tools that reach the hook
+surface. If you need strict host-level tool coverage, configure
+`runtimeCoverage.blockedRuntimeIds`, `runtimeCoverage.blockedProviderIds`, or
+`runtimeCoverage.allowUnidentifiedRuntime: false` to block specific uncovered
+paths before inference.
+
+For host runtimes that own native shell execution outside OpenClaw's hook relay,
+keep OpenClaw's native exec policy out of YOLO mode (`security=full`, `ask=off`)
+so destructive shell commands still require approval.
 
 Recommended baseline:
 
@@ -73,9 +81,10 @@ openclaw gateway restart
 
 If your agents have `agents.list[].tools.exec` overrides, set those overrides to
 the same `security=allowlist`, `ask=on-miss`, and `strictInlineEval=true` values.
-The verification script fails by default unless runtime inspect shows both the
-`before_agent_run` coverage gate and the `before_tool_call` approval gate. It
-also fails when it sees `security=full` plus `ask=off`; set
+The verification script fails by default unless runtime inspect shows the
+`before_prompt_build` run-context hook, the `before_agent_run` coverage gate,
+and the `before_tool_call` approval gate. It also fails when it sees
+`security=full` plus `ask=off`; set
 `REQUIRE_SAFE_EXEC_POLICY=0` only when you intentionally want to test hook
 registration without hardening native exec.
 
@@ -91,11 +100,10 @@ Then test a gated action:
 Run: vercel deploy --prod
 ```
 
-Expected result: OpenClaw-owned tools ask for a next-right-thing approval instead
-of executing directly. Runs whose runtime cannot be proven hook-covered,
-including Claude CLI/native runtime paths, are blocked before inference unless
-you explicitly relax `runtimeCoverage` or route them through a hook-covered
-runtime/native relay.
+Expected result: the model receives the Next Right Thing run context, and
+OpenClaw-owned tools ask for a next-right-thing approval instead of executing
+directly. If strict `runtimeCoverage` blocking is configured, matching runtime
+or provider ids are blocked before inference.
 
 ## Configuration
 
@@ -104,31 +112,35 @@ Config knobs are set under the plugin's entry in your OpenClaw config:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `approvalTimeoutMs` | integer (ms) | `60000` | How long to wait for an approval decision before denying. Times out to **deny** (fail-safe). |
-| `runtimeCoverage.enforce` | boolean | `true` | Register the fail-closed `before_agent_run` gate. |
-| `runtimeCoverage.allowUnidentifiedRuntime` | boolean | `false` | Allow runs when OpenClaw provides no runtime/provider/model identity. Keep `false` unless another layer proves hook coverage. |
-| `runtimeCoverage.blockedRuntimeIds` | string[] | `["claude-cli","anthropic-cli"]` | Runtime ids treated as uncovered and blocked before inference. |
-| `runtimeCoverage.blockedProviderIds` | string[] | `["claude-cli"]` | Provider ids treated as uncovered and blocked before inference. |
-| `runtimeCoverage.message` | string | built-in block text | Operator-facing block message for uncovered runtime paths. |
+| `runContext.enabled` | boolean | `true` | Inject the model-agnostic Next Right Thing operating context with `before_prompt_build`. |
+| `runContext.instruction` | string | built-in NRT context | Optional replacement for the default run-context instruction. |
+| `runtimeCoverage.enforce` | boolean | `true` | Register the `before_agent_run` preflight. |
+| `runtimeCoverage.allowUnidentifiedRuntime` | boolean | `true` | Allow runs when OpenClaw provides no runtime/provider/model identity. Set `false` only for strict host coverage. |
+| `runtimeCoverage.blockedRuntimeIds` | string[] | `[]` | Optional runtime ids to block before inference when strict tool coverage is required. |
+| `runtimeCoverage.blockedProviderIds` | string[] | `[]` | Optional provider ids to block before inference when strict tool coverage is required. |
+| `runtimeCoverage.message` | string | built-in block text | Operator-facing block message for strict runtime-coverage blocks. |
 | `reflection.enabled` | boolean | `true` | Master switch for the built-in reflective deliberation (below). |
 | `reflection.reviewRoles` | string[] | `[]` | Extra review lenses to include — any of `critic`, `verifier`, `security`, `fact_checker`, `memory_curator`. |
 | `reflection.maxAttempts` | integer ≥ 1 | `1` | How many times to ask the model to reflect before letting it finalize. |
 
 ```json
 { "plugins": { "entries": { "next-right-thing": {
-  "hooks": { "allowConversationAccess": true },
+  "hooks": { "allowPromptInjection": true, "allowConversationAccess": true },
   "config": {
     "approvalTimeoutMs": 60000,
-    "runtimeCoverage": { "enforce": true, "allowUnidentifiedRuntime": false },
+    "runContext": { "enabled": true },
+    "runtimeCoverage": { "enforce": true, "allowUnidentifiedRuntime": true },
     "reflection": { "enabled": true, "reviewRoles": ["security"] }
   }
 } } } }
 ```
 
-> **Required for runtime coverage and finalize reflection.** OpenClaw gates
-> `before_agent_run` and `before_agent_finalize` behind a conversation-access
-> permission, so a non-bundled plugin must set
-> `hooks.allowConversationAccess: true` on its entry (alongside `config`).
-> Without it OpenClaw-owned tool-call approval still works, but the run gate and
+> **Required for model-wide NRT context, runtime coverage, and finalize
+> reflection.** OpenClaw gates `before_prompt_build` behind
+> `allowPromptInjection`, and `before_agent_run` / `before_agent_finalize`
+> behind `allowConversationAccess`, so a non-bundled plugin must set both hook
+> permissions on its entry (alongside `config`). Without them OpenClaw-owned
+> tool-call approval still works, but the model-wide run context, run gate, and
 > reflection hook never run. See
 > OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
 

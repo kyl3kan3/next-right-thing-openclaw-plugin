@@ -36,6 +36,7 @@ function registerPlugin(options = {}) {
   const find = (name) => registered.find((r) => r.name === name);
   return {
     names: registered.map((r) => r.name),
+    promptHook: find("before_prompt_build")?.handler,
     runHook: find("before_agent_run")?.handler,
     toolHook: find("before_tool_call")?.handler,
     finalizeHook: find("before_agent_finalize")?.handler,
@@ -123,7 +124,17 @@ test("E2E: the registered before_tool_call hook gates a risky action and allows 
   assert.equal(benign, undefined, "a harmless read passes the gate silently");
 });
 
-test("E2E: the registered before_agent_run hook blocks uncovered runtime paths before inference", async () => {
+test("E2E: the registered before_prompt_build hook injects model-agnostic NRT context", async () => {
+  const { names, promptHook } = registerPlugin();
+  assert.ok(names.includes("before_prompt_build"), "run context hook is registered");
+  assert.ok(promptHook, "before_prompt_build handler is callable");
+
+  const decision = await promptHook({ prompt: "do it", messages: [] }, {});
+  assert.match(decision?.prependSystemContext ?? "", /Next Right Thing protocol is active/);
+  assert.match(decision?.prependSystemContext ?? "", /OpenClaw-covered tools/);
+});
+
+test("E2E: the registered before_agent_run hook is model-agnostic by default", async () => {
   const { names, runHook } = registerPlugin();
   assert.ok(names.includes("before_agent_run"), "runtime coverage gate is registered");
   assert.ok(runHook, "before_agent_run handler is callable");
@@ -134,9 +145,24 @@ test("E2E: the registered before_agent_run hook blocks uncovered runtime paths b
   );
   assert.deepEqual(covered, { outcome: "pass" }, "OpenClaw embedded/provider-identified runs pass");
 
-  const uncovered = await runHook({ prompt: "do it", messages: [] }, {});
-  assert.equal(uncovered?.outcome, "block", "unidentified runtimes fail closed");
-  assert.equal(uncovered?.category, "runtime_coverage");
+  const claude = await runHook(
+    { prompt: "do it", messages: [] },
+    { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
+  );
+  assert.deepEqual(claude, { outcome: "pass" }, "non-OpenAI models can still run under the NRT layer");
+
+  const unidentified = await runHook({ prompt: "do it", messages: [] }, {});
+  assert.deepEqual(unidentified, { outcome: "pass" }, "unidentified runtimes pass when the hook itself is invoked");
+});
+
+test("E2E: strict runtime coverage policy can still block uncovered runtime ids", async () => {
+  const { runHook } = registerPlugin({ runtimeCoverage: { blockedRuntimeIds: ["claude-cli"] } });
+  const blocked = await runHook(
+    { prompt: "do it", messages: [] },
+    { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
+  );
+  assert.equal(blocked?.outcome, "block");
+  assert.equal(blocked?.category, "runtime_coverage");
 });
 
 test("E2E: the registered before_agent_finalize hook forces a one-shot reflection that cannot loop", async () => {
@@ -174,6 +200,7 @@ test("E2E: per-call pluginConfig flows through the registered surface (timeout t
 
 test("E2E: with reflection globally off and no audit loader, the finalize hook is NOT registered (guards conversation-access)", () => {
   const { names } = registerPlugin({ reflection: { enabled: false } });
+  assert.ok(names.includes("before_prompt_build"), "the run context hook still loads");
   assert.ok(names.includes("before_agent_run"), "the runtime coverage gate still loads");
   assert.ok(names.includes("before_tool_call"), "the approval gate still loads");
   assert.ok(

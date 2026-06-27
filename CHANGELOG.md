@@ -34,6 +34,11 @@ Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced t
   `openclaw agent --json` results with `meta.fallbackFrom: "gateway"` are not
   valid hook-coverage evidence; restart the Gateway or force `--local` before
   trusting the smoke.
+- **Model-agnostic NRT run context.** The default entry now registers
+  `before_prompt_build` to inject the Next Right Thing operating context for any
+  model that reaches OpenClaw's hook runner. `before_agent_run` remains the
+  preflight, but no longer blocks Claude CLI or unidentified runtimes by default;
+  strict runtime/provider blocking is opt-in through `runtimeCoverage`.
 - **End-to-end test (`heartbeat/e2e.test.mjs`).** Drives the whole chain the way OpenClaw does, in one
   process: composes a layered prompt from seeded state and dispatches it over a real loopback HTTP POST to
   a stub gateway hooks endpoint, then exercises the plugin's **registered** hook lifecycle

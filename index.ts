@@ -4,7 +4,7 @@ import { createNextRightThingPlugin } from "./next-right-thing-hooks.mjs";
 export default createNextRightThingPlugin(definePluginEntry, {
   pluginId: "next-right-thing",
   name: "Next Right Thing",
-  description: "Adds Next Right Thing approval gates and completion-audit review hooks.",
+  description: "Adds Next Right Thing run context, approval gates, and completion-audit review hooks.",
   configSchema: {
     type: "object",
     additionalProperties: false,
@@ -39,6 +39,21 @@ export default createNextRightThingPlugin(definePluginEntry, {
           },
         },
       },
+      runContext: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: {
+            type: "boolean",
+            default: true,
+            description: "Inject the Next Right Thing operating context into every model run.",
+          },
+          instruction: {
+            type: "string",
+            description: "Optional replacement for the default Next Right Thing run-context instruction.",
+          },
+        },
+      },
       runtimeCoverage: {
         type: "object",
         additionalProperties: false,
@@ -46,22 +61,22 @@ export default createNextRightThingPlugin(definePluginEntry, {
           enforce: {
             type: "boolean",
             default: true,
-            description: "Fail closed before model inference when the run is not on a hook-covered runtime.",
+            description: "Run the before_agent_run coverage check before model inference.",
           },
           allowUnidentifiedRuntime: {
             type: "boolean",
-            default: false,
-            description: "Allow runs whose runtime/provider identity is not exposed to before_agent_run.",
+            default: true,
+            description: "Allow models whose runtime/provider identity is not exposed to before_agent_run.",
           },
           blockedRuntimeIds: {
             type: "array",
             items: { type: "string" },
-            description: "Runtime ids to block because their native tools bypass before_tool_call.",
+            description: "Optional runtime ids to block when strict tool coverage is required.",
           },
           blockedProviderIds: {
             type: "array",
             items: { type: "string" },
-            description: "Provider ids to block because their native tools bypass before_tool_call.",
+            description: "Optional provider ids to block when strict tool coverage is required.",
           },
           message: {
             type: "string",

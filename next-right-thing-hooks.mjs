@@ -1,6 +1,14 @@
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
 const MAX_APPROVAL_DESCRIPTION_LENGTH = 256;
 const MAX_REFLECTION_INSTRUCTION_LENGTH = 1024;
+const MAX_RUN_CONTEXT_INSTRUCTION_LENGTH = 1400;
+const DEFAULT_RUN_CONTEXT_INSTRUCTION = [
+  "Next Right Thing protocol is active for this run.",
+  "Before acting, choose the smallest useful next step that moves the active goal forward.",
+  "Prefer reversible, evidence-producing actions; ask for approval before destructive, production, publishing, messaging, auth, billing, or security-sensitive actions.",
+  "Use OpenClaw-covered tools for risky operations so plugin approvals can fire; if a native model tool would bypass OpenClaw approval, pause and ask to route that action through a covered tool/runtime.",
+  "Before finalizing, state the concrete evidence that the goal is done; if it is not done, name the next right thing instead of claiming completion.",
+].join(" ");
 const DEFAULT_RUNTIME_COVERAGE_BLOCK_MESSAGE =
   "Next Right Thing blocked this run because OpenClaw did not expose a hook-covered tool runtime to the plugin. Route the model through OpenClaw's embedded runtime or enable a native hook relay before running agent tools.";
 // Distinct from the completion-audit key so the host never conflates the two
@@ -109,8 +117,8 @@ export const DB_TOOL_KEYWORDS = new Set([
 
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
-const DEFAULT_BLOCKED_RUNTIME_IDS = ["claude-cli", "anthropic-cli"];
-const DEFAULT_BLOCKED_PROVIDER_IDS = ["claude-cli"];
+const DEFAULT_BLOCKED_RUNTIME_IDS = [];
+const DEFAULT_BLOCKED_PROVIDER_IDS = [];
 
 // One short self-review directive per review lens, used to compose the reflective
 // finalize instruction so the agent's contemplation is multi-perspective.
@@ -352,6 +360,10 @@ function collectRuntimeCoverageIdentity(event = {}, ctx = {}) {
   };
 }
 
+function callPluginConfig(event = {}) {
+  return event?.context?.pluginConfig ?? event?.context?.config ?? event?.config ?? {};
+}
+
 function runtimeCoverageBlock(reason, message, identity, extra = {}) {
   return {
     outcome: "block",
@@ -368,9 +380,10 @@ function runtimeCoverageBlock(reason, message, identity, extra = {}) {
 }
 
 /**
- * Gate a run before model inference unless the plugin can prove the run is on a
- * hook-covered path. This is the fail-closed safety net for runtimes that own
- * native tools outside OpenClaw's `before_tool_call` wrapper.
+ * Confirm that the Next Right Thing layer is present before model inference.
+ * By default this is model-agnostic: any runtime that reaches this hook can run.
+ * Operators can opt into strict blocking for specific runtime/provider ids, or
+ * require exposed identity, when they need hard tool-coverage enforcement.
  *
  * @param {object} event - The `before_agent_run` event.
  * @param {object} [ctx] - The OpenClaw hook context.
@@ -406,11 +419,36 @@ export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
   }
 
   const hasIdentity = identity.runtimeIds.length > 0 || identity.providerIds.length > 0 || identity.modelIds.length > 0;
-  if (!hasIdentity && !normalizeBoolean(options.allowUnidentifiedRuntime, false)) {
+  if (!hasIdentity && !normalizeBoolean(options.allowUnidentifiedRuntime, true)) {
     return runtimeCoverageBlock("runtime coverage identity is missing", options.message, identity);
   }
 
   return { outcome: "pass" };
+}
+
+/**
+ * Inject the model-agnostic Next Right Thing operating context before prompt
+ * construction so runtimes without finalize-hook support still receive the
+ * protocol.
+ *
+ * @param {object} event - The `before_prompt_build` event.
+ * @param {object} [options] - Run-context policy.
+ * @returns {object|undefined} A prompt-build mutation, or undefined when off.
+ */
+export function beforePromptBuildDecision(event = {}, options = {}) {
+  if (!normalizeBoolean(options.enabled, true)) {
+    return undefined;
+  }
+  const instruction = boundedText(
+    redactSecrets(String(options.instruction ?? DEFAULT_RUN_CONTEXT_INSTRUCTION)),
+    MAX_RUN_CONTEXT_INSTRUCTION_LENGTH,
+  );
+  if (!instruction.trim()) {
+    return undefined;
+  }
+  return {
+    prependSystemContext: instruction,
+  };
 }
 
 function defaultReviewRoles(candidate) {
@@ -731,9 +769,10 @@ export function reflectiveFinalizeDecision(event, options = {}) {
 }
 
 /**
- * Create the OpenClaw plugin entry, registering the `before_tool_call` approval
- * gate and the `before_agent_finalize` deliberation gate (built-in reflection by
- * default, composing ahead of any supplied `loadCompletionAudit`).
+ * Create the OpenClaw plugin entry, registering the model-agnostic run context,
+ * runtime preflight, `before_tool_call` approval gate, and
+ * `before_agent_finalize` deliberation gate (built-in reflection by default,
+ * composing ahead of any supplied `loadCompletionAudit`).
  *
  * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
  * @param {object} [options] - Plugin metadata, tool/finalize policy, reflection, and audit loader.
@@ -749,7 +788,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
     name: options.name ?? "Next Right Thing",
     description:
       options.description ??
-      "Adds Next Right Thing approval gates and completion-audit review hooks.",
+      "Adds Next Right Thing run context, approval gates, and completion-audit review hooks.",
     configSchema:
       options.configSchema ?? {
         type: "object",
@@ -771,12 +810,20 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
               maxAttempts: { type: "integer", minimum: 1, default: 1 },
             },
           },
+          runContext: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enabled: { type: "boolean", default: true },
+              instruction: { type: "string" },
+            },
+          },
           runtimeCoverage: {
             type: "object",
             additionalProperties: false,
             properties: {
               enforce: { type: "boolean", default: true },
-              allowUnidentifiedRuntime: { type: "boolean", default: false },
+              allowUnidentifiedRuntime: { type: "boolean", default: true },
               blockedRuntimeIds: { type: "array", items: { type: "string" } },
               blockedProviderIds: { type: "array", items: { type: "string" } },
               message: { type: "string" },
@@ -804,15 +851,27 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
       const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
+      const baseRunContext = { ...(options.runContext ?? {}), ...(pluginConfig.runContext ?? {}) };
+      const runContextEnabled = normalizeBoolean(baseRunContext.enabled, true);
       const baseRuntimeCoverage = { ...(options.runtimeCoverage ?? {}), ...(pluginConfig.runtimeCoverage ?? {}) };
       const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, true);
+
+      if (runContextEnabled) {
+        api.on(
+          "before_prompt_build",
+          async (event) => {
+            const contextOptions = { ...baseRunContext, ...(callPluginConfig(event).runContext ?? {}) };
+            return beforePromptBuildDecision(event, contextOptions);
+          },
+          { priority: options.contextPriority ?? 85, timeoutMs: options.contextTimeoutMs ?? 5_000 },
+        );
+      }
 
       if (runtimeCoverageEnforced) {
         api.on(
           "before_agent_run",
           async (event, ctx) => {
-            const callConfig = event?.context?.pluginConfig ?? event?.context?.config ?? event?.config ?? {};
-            const coverageOptions = { ...baseRuntimeCoverage, ...(callConfig.runtimeCoverage ?? {}) };
+            const coverageOptions = { ...baseRuntimeCoverage, ...(callPluginConfig(event).runtimeCoverage ?? {}) };
             return beforeAgentRunDecision(event, ctx, coverageOptions);
           },
           { priority: options.runPriority ?? 90, timeoutMs: options.runTimeoutMs ?? 5_000 },
@@ -822,7 +881,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       api.on(
         "before_tool_call",
         async (event) => {
-          const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
+          const callConfig = callPluginConfig(event);
           const callConfigTimeout = normalizeNumber(callConfig.approvalTimeoutMs, undefined);
           const timeoutMs = [callConfigTimeout, pluginConfigTimeout, baseToolPolicy.timeoutMs].find((value) =>
             Number.isFinite(value),
@@ -848,8 +907,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
                 return auditDecision;
               }
             }
-            const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
-            const reflectionOptions = { ...baseReflection, ...(callConfig.reflection ?? {}) };
+            const reflectionOptions = { ...baseReflection, ...(callPluginConfig(event).reflection ?? {}) };
             return reflectiveFinalizeDecision(event, reflectionOptions);
           },
           { priority: options.finalizePriority ?? 50, timeoutMs: options.finalizeTimeoutMs ?? 5_000 },

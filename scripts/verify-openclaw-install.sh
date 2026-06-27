@@ -58,21 +58,26 @@ if ! grep -q '"status": "loaded"' "$inspect_file"; then
   printf 'runtime inspect output did not show status: loaded\n' >&2
   exit 11
 fi
+if ! grep -q '"before_prompt_build"' "$inspect_file"; then
+  printf 'runtime inspect output did not show before_prompt_build hook; set plugins.entries.%s.hooks.allowPromptInjection=true for the model-wide NRT context\n' "$PLUGIN_ID" >&2
+  exit 12
+fi
 if ! grep -q '"before_agent_run"' "$inspect_file"; then
   printf 'runtime inspect output did not show before_agent_run hook; set plugins.entries.%s.hooks.allowConversationAccess=true for the runtime coverage gate\n' "$PLUGIN_ID" >&2
-  exit 12
+  exit 13
 fi
 if ! grep -q '"before_tool_call"' "$inspect_file"; then
   printf 'runtime inspect output did not show before_tool_call hook\n' >&2
   exit 14
 fi
-if grep -q 'allowConversationAccess=true' "$inspect_file"; then
+if grep -q 'allowPromptInjection=true\|allowConversationAccess=true' "$inspect_file"; then
   cat <<'EOF'
 
 Note:
-The plugin is loaded, but OpenClaw reports that conversation hooks need
-plugins.entries.next-right-thing.hooks.allowConversationAccess=true. Runtime
-coverage and finalize reflection depend on that permission.
+The plugin is loaded, but OpenClaw reports that hook permissions are missing.
+Set plugins.entries.next-right-thing.hooks.allowPromptInjection=true for the
+model-wide NRT context and allowConversationAccess=true for runtime coverage and
+finalize reflection.
 EOF
 fi
 
@@ -85,11 +90,11 @@ if openclaw approvals get >"$policy_file" 2>&1; then
 Unsafe exec policy detected:
 At least one OpenClaw exec policy still shows security=full and ask=off.
 
-The next-right-thing before_agent_run hook blocks uncovered runtime paths by
-default, and before_tool_call covers OpenClaw-owned dynamic tools. If
-runtimeCoverage is disabled or relaxed, Claude CLI/native shell execution is
-governed by OpenClaw's native exec policy, so YOLO exec mode can bypass this
-plugin's approval prompt.
+The next-right-thing before_prompt_build hook carries NRT context across models,
+before_agent_run proves the layer was invoked before inference, and
+before_tool_call covers OpenClaw-owned dynamic tools. Claude CLI/native shell
+execution can still be governed by OpenClaw's native exec policy, so YOLO exec
+mode can bypass this plugin's tool approval prompt.
 
 Recommended hardening:
   openclaw config patch --stdin <<'JSON'
@@ -102,7 +107,7 @@ security=full or ask=off, then restart the gateway.
 Set REQUIRE_SAFE_EXEC_POLICY=0 to skip this verifier gate.
 EOF
     if [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ]; then
-      exit 13
+      exit 16
     fi
   fi
 else
@@ -126,11 +131,10 @@ Gated:
 Run: vercel deploy --prod
 
 Expected result:
-OpenClaw-owned tools should show a next-right-thing approval prompt instead of
-executing directly. Runs whose runtime cannot be proven hook-covered, including
-Claude CLI/native runtime paths, should be blocked before inference unless
-runtimeCoverage is explicitly relaxed or the runtime is routed through an
-equivalent native relay/exec approval policy.
+Any model that reaches OpenClaw's hook runner should receive the Next Right
+Thing run context. OpenClaw-owned tools should show a next-right-thing approval
+prompt instead of executing directly. Runtime/provider ids are blocked before
+inference only when strict runtimeCoverage blocking is explicitly configured.
 
 For CLI JSON smoke tests, use a healthy Gateway or force the embedded local
 runner with `openclaw agent --local --json ...`. If the result reports

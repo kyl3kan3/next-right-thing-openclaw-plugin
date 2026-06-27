@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   inferEffectsFromToolCall,
   buildToolCandidate,
+  beforePromptBuildDecision,
   beforeAgentRunDecision,
   beforeToolCallDecision,
   reflectiveFinalizeDecision,
@@ -281,6 +282,15 @@ test("approvalTimeoutMs config is threaded into the approval prompt", async () =
   assert.equal(perCall.requireApproval.timeoutMs, 23_456);
 });
 
+test("run context injects Next Right Thing guidance for any model", () => {
+  const decision = beforePromptBuildDecision({ prompt: "ship it", messages: [] });
+  assert.ok(decision?.prependSystemContext);
+  assert.match(decision.prependSystemContext, /Next Right Thing protocol is active/);
+  assert.match(decision.prependSystemContext, /Before finalizing/);
+
+  assert.equal(beforePromptBuildDecision({}, { enabled: false }), undefined);
+});
+
 test("runtime coverage gate passes hook-covered embedded model runs", () => {
   const decision = beforeAgentRunDecision(
     { prompt: "ship it", messages: [] },
@@ -289,16 +299,28 @@ test("runtime coverage gate passes hook-covered embedded model runs", () => {
   assert.deepEqual(decision, { outcome: "pass" });
 });
 
-test("runtime coverage gate blocks Claude CLI and unidentified runtime paths by default", () => {
+test("runtime coverage gate is model-agnostic by default", () => {
   const claudeCli = beforeAgentRunDecision(
     { prompt: "ship it", messages: [] },
     { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
+  );
+  assert.deepEqual(claudeCli, { outcome: "pass" });
+
+  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {});
+  assert.deepEqual(unidentified, { outcome: "pass" });
+});
+
+test("runtime coverage gate can block explicit strict runtime policy", () => {
+  const claudeCli = beforeAgentRunDecision(
+    { prompt: "ship it", messages: [] },
+    { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
+    { blockedRuntimeIds: ["claude-cli"] },
   );
   assert.equal(claudeCli.outcome, "block");
   assert.equal(claudeCli.category, "runtime_coverage");
   assert.equal(claudeCli.metadata.blockedRuntimeId, "claude-cli");
 
-  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {});
+  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {}, { allowUnidentifiedRuntime: false });
   assert.equal(unidentified.outcome, "block");
   assert.equal(unidentified.category, "runtime_coverage");
 });
@@ -376,19 +398,24 @@ test("reflection maxAttempts defaults to 1 and is configurable", () => {
 test("default configSchema exposes the reflection knob", () => {
   const entry = createNextRightThingPlugin((e) => e, {});
   const reflection = entry.configSchema.properties.reflection;
+  const runContext = entry.configSchema.properties.runContext;
   const runtimeCoverage = entry.configSchema.properties.runtimeCoverage;
   assert.ok(reflection);
   assert.ok(reflection.properties.enabled);
   assert.ok(reflection.properties.reviewRoles);
   assert.ok(reflection.properties.maxAttempts);
+  assert.ok(runContext);
+  assert.ok(runContext.properties.enabled);
+  assert.ok(runContext.properties.instruction);
   assert.ok(runtimeCoverage);
   assert.ok(runtimeCoverage.properties.enforce);
   assert.ok(runtimeCoverage.properties.allowUnidentifiedRuntime);
   // Documented defaults are encoded for schema consumers / config UIs.
   assert.equal(reflection.properties.enabled.default, true);
   assert.equal(reflection.properties.maxAttempts.default, 1);
+  assert.equal(runContext.properties.enabled.default, true);
   assert.equal(runtimeCoverage.properties.enforce.default, true);
-  assert.equal(runtimeCoverage.properties.allowUnidentifiedRuntime.default, false);
+  assert.equal(runtimeCoverage.properties.allowUnidentifiedRuntime.default, true);
 });
 
 test("globally-disabled reflection is not re-enabled by per-call config (no audit)", async () => {
