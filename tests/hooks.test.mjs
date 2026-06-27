@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   inferEffectsFromToolCall,
   buildToolCandidate,
+  beforeAgentRunDecision,
   beforeToolCallDecision,
   reflectiveFinalizeDecision,
   createNextRightThingPlugin,
@@ -280,6 +281,33 @@ test("approvalTimeoutMs config is threaded into the approval prompt", async () =
   assert.equal(perCall.requireApproval.timeoutMs, 23_456);
 });
 
+test("runtime coverage gate passes hook-covered embedded model runs", () => {
+  const decision = beforeAgentRunDecision(
+    { prompt: "ship it", messages: [] },
+    { modelProviderId: "openai", modelId: "gpt-5.5" },
+  );
+  assert.deepEqual(decision, { outcome: "pass" });
+});
+
+test("runtime coverage gate blocks Claude CLI and unidentified runtime paths by default", () => {
+  const claudeCli = beforeAgentRunDecision(
+    { prompt: "ship it", messages: [] },
+    { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
+  );
+  assert.equal(claudeCli.outcome, "block");
+  assert.equal(claudeCli.category, "runtime_coverage");
+  assert.equal(claudeCli.metadata.blockedRuntimeId, "claude-cli");
+
+  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {});
+  assert.equal(unidentified.outcome, "block");
+  assert.equal(unidentified.category, "runtime_coverage");
+});
+
+test("runtime coverage gate can be explicitly disabled or relaxed", () => {
+  assert.deepEqual(beforeAgentRunDecision({}, {}, { enforce: false }), { outcome: "pass" });
+  assert.deepEqual(beforeAgentRunDecision({}, {}, { allowUnidentifiedRuntime: true }), { outcome: "pass" });
+});
+
 test("reflective deliberation is registered and revises on finalize by default", async () => {
   const handler = finalizeHandler(); // no loadCompletionAudit, no reflection config
   assert.ok(handler, "before_agent_finalize should be registered by default");
@@ -348,13 +376,19 @@ test("reflection maxAttempts defaults to 1 and is configurable", () => {
 test("default configSchema exposes the reflection knob", () => {
   const entry = createNextRightThingPlugin((e) => e, {});
   const reflection = entry.configSchema.properties.reflection;
+  const runtimeCoverage = entry.configSchema.properties.runtimeCoverage;
   assert.ok(reflection);
   assert.ok(reflection.properties.enabled);
   assert.ok(reflection.properties.reviewRoles);
   assert.ok(reflection.properties.maxAttempts);
+  assert.ok(runtimeCoverage);
+  assert.ok(runtimeCoverage.properties.enforce);
+  assert.ok(runtimeCoverage.properties.allowUnidentifiedRuntime);
   // Documented defaults are encoded for schema consumers / config UIs.
   assert.equal(reflection.properties.enabled.default, true);
   assert.equal(reflection.properties.maxAttempts.default, 1);
+  assert.equal(runtimeCoverage.properties.enforce.default, true);
+  assert.equal(runtimeCoverage.properties.allowUnidentifiedRuntime.default, false);
 });
 
 test("globally-disabled reflection is not re-enabled by per-call config (no audit)", async () => {

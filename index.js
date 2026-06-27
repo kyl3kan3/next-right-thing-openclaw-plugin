@@ -39,6 +39,36 @@ export default createNextRightThingPlugin(definePluginEntry, {
           },
         },
       },
+      runtimeCoverage: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enforce: {
+            type: "boolean",
+            default: true,
+            description: "Fail closed before model inference when the run is not on a hook-covered runtime.",
+          },
+          allowUnidentifiedRuntime: {
+            type: "boolean",
+            default: false,
+            description: "Allow runs whose runtime/provider identity is not exposed to before_agent_run.",
+          },
+          blockedRuntimeIds: {
+            type: "array",
+            items: { type: "string" },
+            description: "Runtime ids to block because their native tools bypass before_tool_call.",
+          },
+          blockedProviderIds: {
+            type: "array",
+            items: { type: "string" },
+            description: "Provider ids to block because their native tools bypass before_tool_call.",
+          },
+          message: {
+            type: "string",
+            description: "Optional user-facing block message for uncovered runtime paths.",
+          },
+        },
+      },
     },
   },
   toolPolicy: {

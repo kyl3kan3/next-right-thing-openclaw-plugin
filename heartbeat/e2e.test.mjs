@@ -22,7 +22,7 @@ import { createNextRightThingPlugin } from "../next-right-thing-hooks.mjs";
 const REFLECTION_KEY = "next-right-thing-reflection";
 const AUDIT_KEY = "next-right-thing-completion-audit";
 
-// Build the two registered hook handlers as OpenClaw would, by running register()
+// Build the registered hook handlers as OpenClaw would, by running register()
 // against a stub `api` that records every api.on(name, handler, opts).
 function registerPlugin(options = {}) {
   const registered = [];
@@ -36,6 +36,7 @@ function registerPlugin(options = {}) {
   const find = (name) => registered.find((r) => r.name === name);
   return {
     names: registered.map((r) => r.name),
+    runHook: find("before_agent_run")?.handler,
     toolHook: find("before_tool_call")?.handler,
     finalizeHook: find("before_agent_finalize")?.handler,
   };
@@ -122,6 +123,22 @@ test("E2E: the registered before_tool_call hook gates a risky action and allows 
   assert.equal(benign, undefined, "a harmless read passes the gate silently");
 });
 
+test("E2E: the registered before_agent_run hook blocks uncovered runtime paths before inference", async () => {
+  const { names, runHook } = registerPlugin();
+  assert.ok(names.includes("before_agent_run"), "runtime coverage gate is registered");
+  assert.ok(runHook, "before_agent_run handler is callable");
+
+  const covered = await runHook(
+    { prompt: "do it", messages: [] },
+    { modelProviderId: "openai", modelId: "gpt-5.5" },
+  );
+  assert.deepEqual(covered, { outcome: "pass" }, "OpenClaw embedded/provider-identified runs pass");
+
+  const uncovered = await runHook({ prompt: "do it", messages: [] }, {});
+  assert.equal(uncovered?.outcome, "block", "unidentified runtimes fail closed");
+  assert.equal(uncovered?.category, "runtime_coverage");
+});
+
 test("E2E: the registered before_agent_finalize hook forces a one-shot reflection that cannot loop", async () => {
   const { finalizeHook } = registerPlugin();
   assert.ok(finalizeHook, "finalize gate is registered by default");
@@ -157,6 +174,7 @@ test("E2E: per-call pluginConfig flows through the registered surface (timeout t
 
 test("E2E: with reflection globally off and no audit loader, the finalize hook is NOT registered (guards conversation-access)", () => {
   const { names } = registerPlugin({ reflection: { enabled: false } });
+  assert.ok(names.includes("before_agent_run"), "the runtime coverage gate still loads");
   assert.ok(names.includes("before_tool_call"), "the approval gate still loads");
   assert.ok(
     !names.includes("before_agent_finalize"),

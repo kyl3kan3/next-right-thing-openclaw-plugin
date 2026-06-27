@@ -25,6 +25,15 @@ Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced t
 
 ### Added
 
+- **Fail-closed runtime coverage gate.** The default plugin entry now registers
+  `before_agent_run` and blocks known uncovered runtime paths such as
+  `claude-cli`/`anthropic-cli`, plus unidentified runtime paths, before
+  inference. `runtimeCoverage` config can tune or explicitly disable the layer
+  when another runtime relay provides equivalent coverage.
+- **Runtime smoke guidance.** Documentation and the verifier now warn that
+  `openclaw agent --json` results with `meta.fallbackFrom: "gateway"` are not
+  valid hook-coverage evidence; restart the Gateway or force `--local` before
+  trusting the smoke.
 - **End-to-end test (`heartbeat/e2e.test.mjs`).** Drives the whole chain the way OpenClaw does, in one
   process: composes a layered prompt from seeded state and dispatches it over a real loopback HTTP POST to
   a stub gateway hooks endpoint, then exercises the plugin's **registered** hook lifecycle

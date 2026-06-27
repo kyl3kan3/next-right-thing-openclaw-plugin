@@ -1,6 +1,8 @@
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
 const MAX_APPROVAL_DESCRIPTION_LENGTH = 256;
 const MAX_REFLECTION_INSTRUCTION_LENGTH = 1024;
+const DEFAULT_RUNTIME_COVERAGE_BLOCK_MESSAGE =
+  "Next Right Thing blocked this run because OpenClaw did not expose a hook-covered tool runtime to the plugin. Route the model through OpenClaw's embedded runtime or enable a native hook relay before running agent tools.";
 // Distinct from the completion-audit key so the host never conflates the two
 // `before_agent_finalize` revise paths (audit vs built-in reflection).
 const REFLECTION_IDEMPOTENCY_KEY = "next-right-thing-reflection";
@@ -107,6 +109,8 @@ export const DB_TOOL_KEYWORDS = new Set([
 
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
+const DEFAULT_BLOCKED_RUNTIME_IDS = ["claude-cli", "anthropic-cli"];
+const DEFAULT_BLOCKED_PROVIDER_IDS = ["claude-cli"];
 
 // One short self-review directive per review lens, used to compose the reflective
 // finalize instruction so the agent's contemplation is multi-perspective.
@@ -294,6 +298,119 @@ function normalizeReviewRoles(roles) {
     }
   }
   return normalized;
+}
+
+function normalizeStringList(values, fallback = []) {
+  const raw = Array.isArray(values) ? values : values == null ? fallback : [values];
+  return [
+    ...new Set(
+      raw
+        .map((value) => String(value ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function readNestedId(value, path) {
+  let current = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return typeof current === "string" && current.trim() ? current.trim() : undefined;
+}
+
+function collectRuntimeCoverageIdentity(event = {}, ctx = {}) {
+  const sources = [event, ctx, event.context, event.ctx].filter(Boolean);
+  const readAny = (paths) =>
+    normalizeStringList(
+      sources.flatMap((source) => paths.map((path) => readNestedId(source, path))),
+      [],
+    );
+
+  return {
+    runtimeIds: readAny([
+      ["runtimeId"],
+      ["agentRuntimeId"],
+      ["agentRuntime"],
+      ["agentRuntime", "id"],
+      ["runtime", "id"],
+    ]),
+    providerIds: readAny([
+      ["provider"],
+      ["providerId"],
+      ["modelProviderId"],
+      ["model", "provider"],
+    ]),
+    modelIds: readAny([
+      ["model"],
+      ["modelId"],
+      ["model", "id"],
+    ]),
+  };
+}
+
+function runtimeCoverageBlock(reason, message, identity, extra = {}) {
+  return {
+    outcome: "block",
+    reason,
+    message: message || DEFAULT_RUNTIME_COVERAGE_BLOCK_MESSAGE,
+    category: "runtime_coverage",
+    metadata: {
+      ...(identity.runtimeIds.length ? { runtimeIds: identity.runtimeIds } : {}),
+      ...(identity.providerIds.length ? { providerIds: identity.providerIds } : {}),
+      ...(identity.modelIds.length ? { modelIds: identity.modelIds } : {}),
+      ...extra,
+    },
+  };
+}
+
+/**
+ * Gate a run before model inference unless the plugin can prove the run is on a
+ * hook-covered path. This is the fail-closed safety net for runtimes that own
+ * native tools outside OpenClaw's `before_tool_call` wrapper.
+ *
+ * @param {object} event - The `before_agent_run` event.
+ * @param {object} [ctx] - The OpenClaw hook context.
+ * @param {object} [options] - Runtime coverage policy.
+ * @returns {object} A pass/block input-gate decision.
+ */
+export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
+  if (!normalizeBoolean(options.enforce, true)) {
+    return { outcome: "pass" };
+  }
+
+  const identity = collectRuntimeCoverageIdentity(event, ctx);
+  const blockedRuntimeIds = normalizeStringList(options.blockedRuntimeIds, DEFAULT_BLOCKED_RUNTIME_IDS);
+  const blockedProviderIds = normalizeStringList(options.blockedProviderIds, DEFAULT_BLOCKED_PROVIDER_IDS);
+  const blockedRuntimeId = identity.runtimeIds.find((runtimeId) => blockedRuntimeIds.includes(runtimeId));
+  if (blockedRuntimeId) {
+    return runtimeCoverageBlock(
+      `runtime ${blockedRuntimeId} is not covered by before_tool_call`,
+      options.message,
+      identity,
+      { blockedRuntimeId },
+    );
+  }
+
+  const blockedProviderId = identity.providerIds.find((providerId) => blockedProviderIds.includes(providerId));
+  if (blockedProviderId) {
+    return runtimeCoverageBlock(
+      `provider ${blockedProviderId} is not covered by before_tool_call`,
+      options.message,
+      identity,
+      { blockedProviderId },
+    );
+  }
+
+  const hasIdentity = identity.runtimeIds.length > 0 || identity.providerIds.length > 0 || identity.modelIds.length > 0;
+  if (!hasIdentity && !normalizeBoolean(options.allowUnidentifiedRuntime, false)) {
+    return runtimeCoverageBlock("runtime coverage identity is missing", options.message, identity);
+  }
+
+  return { outcome: "pass" };
 }
 
 function defaultReviewRoles(candidate) {
@@ -654,6 +771,17 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
               maxAttempts: { type: "integer", minimum: 1, default: 1 },
             },
           },
+          runtimeCoverage: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enforce: { type: "boolean", default: true },
+              allowUnidentifiedRuntime: { type: "boolean", default: false },
+              blockedRuntimeIds: { type: "array", items: { type: "string" } },
+              blockedProviderIds: { type: "array", items: { type: "string" } },
+              message: { type: "string" },
+            },
+          },
         },
       },
     register(api) {
@@ -676,6 +804,20 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
       const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
+      const baseRuntimeCoverage = { ...(options.runtimeCoverage ?? {}), ...(pluginConfig.runtimeCoverage ?? {}) };
+      const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, true);
+
+      if (runtimeCoverageEnforced) {
+        api.on(
+          "before_agent_run",
+          async (event, ctx) => {
+            const callConfig = event?.context?.pluginConfig ?? event?.context?.config ?? event?.config ?? {};
+            const coverageOptions = { ...baseRuntimeCoverage, ...(callConfig.runtimeCoverage ?? {}) };
+            return beforeAgentRunDecision(event, ctx, coverageOptions);
+          },
+          { priority: options.runPriority ?? 90, timeoutMs: options.runTimeoutMs ?? 5_000 },
+        );
+      }
 
       api.on(
         "before_tool_call",

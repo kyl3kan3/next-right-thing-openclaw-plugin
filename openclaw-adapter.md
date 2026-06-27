@@ -28,8 +28,12 @@ See OpenClaw's plugin manifest, entrypoint, and permission request docs:
 
 ## Hook Mapping
 
-The shipped entry (`index.js`) registers `before_tool_call` and `before_agent_finalize` (the latter is on by default for built-in reflective deliberation). `after_tool_call` and `agent_end` are documented integration points but are **not** registered by the default entry.
+The shipped entry (`index.js`) registers `before_agent_run`, `before_tool_call`,
+and `before_agent_finalize` (the latter is on by default for built-in reflective
+deliberation). `after_tool_call` and `agent_end` are documented integration
+points but are **not** registered by the default entry.
 
+- `before_agent_run` (registered by default; **requires** `hooks.allowConversationAccess: true` on the plugin entry, since OpenClaw gates this hook behind conversation access): fail closed before inference when the runtime cannot be proven hook-covered. Embedded OpenClaw provider/model runs pass; known uncovered runtime ids such as `claude-cli`/`anthropic-cli`, known uncovered provider ids such as `claude-cli`, and unidentified runtime paths block by default with `category: "runtime_coverage"`. Disable or tune only through `runtimeCoverage` when another layer provides equivalent coverage.
 - `before_tool_call` (registered): infer side effects from OpenClaw-owned dynamic tool calls and request approval for production mutation, destructive operations, publishing, messaging, auth changes, billing changes, or security exposure. Side-effect inference scans both the command string and the serialized tool params, so it catches:
   - destructive shell commands such as recursive-force deletes, hard resets, forced cleans, forced pushes, recursive PowerShell removal, and DELETE HTTP requests;
   - destructive SQL (`DROP TABLE/DATABASE/SCHEMA`, `DELETE FROM`, `TRUNCATE`) on database- and exec-like tools (so MCP database tools that carry SQL in params are gated, while a tool merely mentioning SQL as text is not);
@@ -50,12 +54,22 @@ Approval prompts are deliberately bounded for OpenClaw approval surfaces:
 ### Native runtime boundary
 
 OpenClaw runtimes that own their own native shell tools may not route those
-calls through plugin `before_tool_call`. On OpenClaw 2026.6.9, Claude CLI native
-shell execution follows OpenClaw's native exec policy instead. Keep
+calls through plugin `before_tool_call`. The default `before_agent_run` layer
+therefore blocks known uncovered runtime paths, including Claude CLI, before
+model inference starts.
+
+Only relax `runtimeCoverage` if you have confirmed that a native relay or
+OpenClaw exec policy supplies equivalent review. In that case, keep
 `tools.exec.security=allowlist` with `tools.exec.ask=on-miss` or stricter, and
 apply the same values to any `agents.list[].tools.exec` overrides. If the
-effective policy remains `security=full` and `ask=off`, destructive Claude CLI
-shell commands can execute without this plugin seeing them.
+effective policy remains `security=full` and `ask=off` while runtime coverage is
+relaxed, destructive CLI shell commands can execute without this plugin seeing
+them.
+
+When testing through `openclaw agent --json`, do not count a result with
+`meta.fallbackFrom: "gateway"` as coverage evidence. That means the Gateway
+request failed and OpenClaw used an automatic embedded fallback path; restart the
+Gateway or force `--local` and rerun the smoke.
 
 ## Minimal Use
 
