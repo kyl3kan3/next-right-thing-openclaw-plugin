@@ -3,9 +3,10 @@
 A dependency-free OpenClaw hook plugin whose **core is one reactive guardrail**: a
 `before_tool_call` **approval gate** that pauses for human approval before risky or
 irreversible actions (destructive shell, destructive SQL, production deploys, secret
-exposure) and blocks calls that do not move the active goal forward. It **wraps prepared
-turns and never drives the agent** — a plain install registers only the gate and needs no
-extra permission grant.
+exposure). It can also block a call flagged as not moving the active goal forward when a
+host supplies that `moves_goal` signal, though the default entry infers risk effects only.
+It **wraps prepared turns and never drives the agent** — a plain install registers only the
+gate and needs no extra permission grant.
 
 Three **optional layers are opt-in** (all default **off**), each turning on one additional
 hook when you ask for it:
@@ -27,13 +28,20 @@ openclaw plugins inspect next-right-thing --runtime --json
 > Installs the current stable release. To test unreleased changes instead, replace
 > the tag with `@main`.
 
+> **Version note:** the opt-in defaults described here (only `before_tool_call` registered
+> out of the box; `reflection` / `runContext` / `runtimeCoverage` off) are on **`@main`** and
+> ship in the next tagged release. The pinned `@v0.3.4-openclaw` predates this refocus and
+> still registers the finalize/run-context/coverage hooks by default — install `@main` to
+> get the behavior below.
+
 The approval gate works out of the box — **no extra permission grant required**. A plain
 install registers only `before_tool_call`.
 
 > **Only if you opt into the layers above:** OpenClaw gates the extra hooks behind
 > operator-granted permissions. Add the ones you actually enable — `allowConversationAccess`
-> for `reflection.enabled` (the `before_agent_finalize` hook) and `allowPromptInjection` for
-> `runContext.enabled` (the `before_prompt_build` hook):
+> for `reflection.enabled` (`before_agent_finalize`) **and** for `runtimeCoverage.enforce`
+> (`before_agent_run`, a raw-conversation hook), and `allowPromptInjection` for
+> `runContext.enabled` (`before_prompt_build`):
 >
 > ```json
 > { "plugins": { "entries": { "next-right-thing": {
@@ -131,7 +139,7 @@ Config knobs are set under the plugin's entry in your OpenClaw config:
 | `approvalTimeoutMs` | integer (ms) | `60000` | How long to wait for an approval decision before denying. Times out to **deny** (fail-safe). |
 | `runContext.enabled` | boolean | `false` | **Opt-in.** Inject the model-agnostic Next Right Thing operating context with `before_prompt_build` (requires `allowPromptInjection`). |
 | `runContext.instruction` | string | built-in NRT context | Optional replacement for the default run-context instruction. |
-| `runtimeCoverage.enforce` | boolean | `false` | **Opt-in.** Register the `before_agent_run` preflight. |
+| `runtimeCoverage.enforce` | boolean | `false` | **Opt-in.** Register the `before_agent_run` preflight (requires `allowConversationAccess`). |
 | `runtimeCoverage.allowUnidentifiedRuntime` | boolean | `true` | Allow runs when OpenClaw provides no runtime/provider/model identity. Set `false` only for strict host coverage. |
 | `runtimeCoverage.blockedRuntimeIds` | string[] | `[]` | Optional runtime ids to block before inference when strict tool coverage is required. |
 | `runtimeCoverage.blockedProviderIds` | string[] | `[]` | Optional provider ids to block before inference when strict tool coverage is required. |
@@ -156,8 +164,9 @@ A gate-only install needs no `config` block at all. Below is an "everything opte
 ```
 
 > **Permissions are needed only for the layers you enable.** OpenClaw gates
-> `before_prompt_build` behind `allowPromptInjection` (`runContext.enabled`) and
-> `before_agent_finalize` behind `allowConversationAccess` (`reflection.enabled`). Add only the
+> `before_prompt_build` behind `allowPromptInjection` (`runContext.enabled`), and both
+> `before_agent_finalize` (`reflection.enabled`) and `before_agent_run`
+> (`runtimeCoverage.enforce`) behind `allowConversationAccess`. Add only the
 > grant(s) for what you turn on; a gate-only install needs none. See
 > OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
 
