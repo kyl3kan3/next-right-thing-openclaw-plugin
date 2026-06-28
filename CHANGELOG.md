@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed (scope realignment — opt-in defaults)
+
+The three turn-shaping/auditing layers added since the v0.2.x scaffold now ship
+**off by default**, so the baseline install matches the original scope: a single
+always-on `before_tool_call` approval gate that needs **no** hook permission.
+
+- **`runContext.enabled`, `runtimeCoverage.enforce`, and `reflection.enabled` now
+  default to `false`.** The `before_prompt_build`, `before_agent_run`, and
+  `before_agent_finalize` hooks register only when you both enable the layer in
+  `config` and grant its OpenClaw hook permission (`allowPromptInjection` /
+  `allowConversationAccess`). A deliberately-off layer never claims a permissioned
+  hook. (Behavior change: installs that relied on default-on run context, runtime
+  coverage, or finalize reflection must now opt in explicitly.)
+- **Verification script:** `before_prompt_build` and `before_agent_run` are no
+  longer required by default. Only the `before_tool_call` core gate is required.
+  Set `REQUIRE_RUN_CONTEXT=1` / `REQUIRE_RUNTIME_COVERAGE=1` to require the opt-in
+  hooks once you have enabled them.
+- **`index.ts` / `index.js`** no longer duplicate the config schema; the plugin's
+  built-in schema is the single source of truth, removing the byte-identical
+  drift between the two entrypoints.
+- **Docs:** the README now leads with an explicit **Scope & charter** statement
+  (always-on core gate vs. opt-in layers vs. separate heartbeat companion vs. the
+  out-of-scope Python sidecar), and the install/config sections reflect opt-in
+  defaults.
+
+### Changed (heartbeat split out)
+
+- The `heartbeat/` continuation engine is now its own package
+  (`@next-right-thing/heartbeat`) with its own `package.json`. It remains
+  dependency-free, does not import the plugin (and vice versa), and can be lifted
+  into a standalone repository without touching the plugin. It is documented as a
+  separate companion, not part of the plugin's hook runtime.
+
+### Documented
+
+- The Python Next Right Thing runtime (`nrt reviews`/`scheduler`/`supervisor`,
+  `nrt_security_scan.py`) is explicitly **out of scope** for this dependency-free
+  adapter repository; wire it in via `loadCompletionAudit` only if you run that
+  separate source tree.
+
 ### Fixed (effect-inference completeness — found by the E2E adversarial workflow)
 
 Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced through the

@@ -10,6 +10,12 @@ reflection on every turn it triggers.
 It is a **client of the gateway**, separate from the plugin's hook runtime. No npm
 deps; runs with plain `node`.
 
+> **This is its own package** (`@next-right-thing/heartbeat`), vendored alongside the
+> plugin only for convenience. It does not import the plugin and the plugin does not
+> import it, so it can be lifted into a standalone repository without touching the
+> plugin. The plugin works without the heartbeat; the heartbeat is just the optional
+> *drive* on top of the plugin's per-turn guardrails.
+
 ## The goal model (three layers, one prompt)
 
 Each tick composes a single prompt from three files in `state/` — empty layers drop out:

@@ -1,0 +1,11 @@
+{
+  "name": "@next-right-thing/heartbeat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Optional Next Right Thing continuation engine: a dependency-free OpenClaw gateway client that drives an agent on a timer. Separate from the next-right-thing OpenClaw plugin; vendored alongside it for convenience.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -289,57 +289,84 @@ test("approvalTimeoutMs config is threaded into the approval prompt", async () =
   assert.equal(perCall.requireApproval.timeoutMs, 23_456);
 });
 
-test("run context injects Next Right Thing guidance for any model", () => {
-  const decision = beforePromptBuildDecision({ prompt: "ship it", messages: [] });
+test("run context is opt-in: off by default, injects guidance when enabled", () => {
+  // Opt-in: with no options (and explicitly disabled) the run context stays off.
+  assert.equal(beforePromptBuildDecision({ prompt: "ship it", messages: [] }), undefined);
+  assert.equal(beforePromptBuildDecision({}, { enabled: false }), undefined);
+
+  const decision = beforePromptBuildDecision({ prompt: "ship it", messages: [] }, { enabled: true });
   assert.ok(decision?.prependSystemContext);
   assert.match(decision.prependSystemContext, /Next Right Thing protocol is active/);
   assert.match(decision.prependSystemContext, /Before finalizing/);
-
-  assert.equal(beforePromptBuildDecision({}, { enabled: false }), undefined);
 });
 
-test("runtime coverage gate passes hook-covered embedded model runs", () => {
+test("runtime coverage gate is opt-in: off unless enforce is set", () => {
+  // Default (no options) and an unidentified runtime both pass because the gate
+  // is opt-in. A strict block policy only takes effect once enforce is on.
+  assert.deepEqual(beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {}), { outcome: "pass" });
+  assert.deepEqual(
+    beforeAgentRunDecision({}, {}, { blockedRuntimeIds: ["claude-cli"], allowUnidentifiedRuntime: false }),
+    { outcome: "pass" },
+  );
+});
+
+test("enforced runtime coverage gate passes hook-covered embedded model runs", () => {
   const decision = beforeAgentRunDecision(
     { prompt: "ship it", messages: [] },
     { modelProviderId: "openai", modelId: "gpt-5.5" },
+    { enforce: true },
   );
   assert.deepEqual(decision, { outcome: "pass" });
 });
 
-test("runtime coverage gate is model-agnostic by default", () => {
+test("enforced runtime coverage gate is still model-agnostic by default", () => {
   const claudeCli = beforeAgentRunDecision(
     { prompt: "ship it", messages: [] },
     { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
+    { enforce: true },
   );
   assert.deepEqual(claudeCli, { outcome: "pass" });
 
-  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {});
+  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {}, { enforce: true });
   assert.deepEqual(unidentified, { outcome: "pass" });
 });
 
-test("runtime coverage gate can block explicit strict runtime policy", () => {
+test("enforced runtime coverage gate can block explicit strict runtime policy", () => {
   const claudeCli = beforeAgentRunDecision(
     { prompt: "ship it", messages: [] },
     { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
-    { blockedRuntimeIds: ["claude-cli"] },
+    { enforce: true, blockedRuntimeIds: ["claude-cli"] },
   );
   assert.equal(claudeCli.outcome, "block");
   assert.equal(claudeCli.category, "runtime_coverage");
   assert.equal(claudeCli.metadata.blockedRuntimeId, "claude-cli");
 
-  const unidentified = beforeAgentRunDecision({ prompt: "ship it", messages: [] }, {}, { allowUnidentifiedRuntime: false });
+  const unidentified = beforeAgentRunDecision(
+    { prompt: "ship it", messages: [] },
+    {},
+    { enforce: true, allowUnidentifiedRuntime: false },
+  );
   assert.equal(unidentified.outcome, "block");
   assert.equal(unidentified.category, "runtime_coverage");
 });
 
-test("runtime coverage gate can be explicitly disabled or relaxed", () => {
+test("enforced runtime coverage gate can be relaxed back to pass", () => {
   assert.deepEqual(beforeAgentRunDecision({}, {}, { enforce: false }), { outcome: "pass" });
-  assert.deepEqual(beforeAgentRunDecision({}, {}, { allowUnidentifiedRuntime: true }), { outcome: "pass" });
+  assert.deepEqual(
+    beforeAgentRunDecision({}, {}, { enforce: true, allowUnidentifiedRuntime: true }),
+    { outcome: "pass" },
+  );
 });
 
-test("reflective deliberation is registered and revises on finalize by default", async () => {
-  const handler = finalizeHandler(); // no loadCompletionAudit, no reflection config
-  assert.ok(handler, "before_agent_finalize should be registered by default");
+test("reflection is opt-in: finalize hook is not registered by default", () => {
+  // Opt-in: with no loadCompletionAudit and no reflection config, the plugin must
+  // not claim the conversation-access before_agent_finalize hook for a no-op.
+  assert.equal(finalizeHandler(), undefined);
+});
+
+test("reflective deliberation revises on finalize when enabled", async () => {
+  const handler = finalizeHandler({ reflection: { enabled: true } });
+  assert.ok(handler, "before_agent_finalize should be registered when reflection is enabled");
   const decision = await handler.handler({});
   assert.equal(decision.action, "revise");
   assert.equal(decision.retry.maxAttempts, 1);
@@ -348,7 +375,7 @@ test("reflective deliberation is registered and revises on finalize by default",
 });
 
 test("reflection instruction names the review lenses in priority order", async () => {
-  const handler = finalizeHandler({}, { pluginConfig: { reflection: { reviewRoles: ["security"] } } });
+  const handler = finalizeHandler({}, { pluginConfig: { reflection: { enabled: true, reviewRoles: ["security"] } } });
   const { instruction } = (await handler.handler({})).retry;
   for (const lens of ["critic", "security", "verifier"]) {
     assert.ok(instruction.includes(lens), `instruction should mention ${lens}`);
@@ -363,14 +390,14 @@ test("reflection disabled statically skips finalize registration when no audit",
 });
 
 test("reflection disabled per-call allows finalize (returns undefined)", async () => {
-  const handler = finalizeHandler(); // enabled by default -> hook registered
+  const handler = finalizeHandler({ reflection: { enabled: true } }); // registered
   assert.ok(handler);
   const decision = await handler.handler({ context: { pluginConfig: { reflection: { enabled: false } } } });
   assert.equal(decision, undefined);
 });
 
 test("per-call reflection config overrides plugin-level", async () => {
-  const handler = finalizeHandler({}, { pluginConfig: { reflection: { maxAttempts: 1 } } });
+  const handler = finalizeHandler({}, { pluginConfig: { reflection: { enabled: true, maxAttempts: 1 } } });
   const decision = await handler.handler({ context: { pluginConfig: { reflection: { maxAttempts: 3 } } } });
   assert.equal(decision.retry.maxAttempts, 3);
 });
@@ -386,20 +413,23 @@ test("loadCompletionAudit composes ahead of reflection (audit wins, distinct key
   assert.equal(d1.action, "revise");
   assert.equal(d1.retry.idempotencyKey, AUDIT_KEY);
 
-  // A complete audit falls through to the built-in reflection.
-  const complete = finalizeHandler({ loadCompletionAudit: async () => ({ status: "complete" }) });
+  // A complete audit falls through to the built-in reflection (enabled here).
+  const complete = finalizeHandler({
+    loadCompletionAudit: async () => ({ status: "complete" }),
+    reflection: { enabled: true },
+  });
   const d2 = await complete.handler({});
   assert.equal(d2.action, "revise");
   assert.equal(d2.retry.idempotencyKey, REFLECTION_KEY);
 });
 
 test("reflectiveFinalizeDecision rejects unknown review roles", () => {
-  assert.throws(() => reflectiveFinalizeDecision({}, { reviewRoles: ["bogus"] }), TypeError);
+  assert.throws(() => reflectiveFinalizeDecision({}, { enabled: true, reviewRoles: ["bogus"] }), TypeError);
 });
 
 test("reflection maxAttempts defaults to 1 and is configurable", () => {
-  assert.equal(reflectiveFinalizeDecision({}, {}).retry.maxAttempts, 1);
-  assert.equal(reflectiveFinalizeDecision({}, { maxAttempts: 2 }).retry.maxAttempts, 2);
+  assert.equal(reflectiveFinalizeDecision({}, { enabled: true }).retry.maxAttempts, 1);
+  assert.equal(reflectiveFinalizeDecision({}, { enabled: true, maxAttempts: 2 }).retry.maxAttempts, 2);
 });
 
 test("default configSchema exposes the reflection knob", () => {
@@ -417,11 +447,12 @@ test("default configSchema exposes the reflection knob", () => {
   assert.ok(runtimeCoverage);
   assert.ok(runtimeCoverage.properties.enforce);
   assert.ok(runtimeCoverage.properties.allowUnidentifiedRuntime);
-  // Documented defaults are encoded for schema consumers / config UIs.
-  assert.equal(reflection.properties.enabled.default, true);
+  // Documented defaults are encoded for schema consumers / config UIs. The three
+  // permissioned layers are opt-in (default false); the approval gate is the core.
+  assert.equal(reflection.properties.enabled.default, false);
   assert.equal(reflection.properties.maxAttempts.default, 1);
-  assert.equal(runContext.properties.enabled.default, true);
-  assert.equal(runtimeCoverage.properties.enforce.default, true);
+  assert.equal(runContext.properties.enabled.default, false);
+  assert.equal(runtimeCoverage.properties.enforce.default, false);
   assert.equal(runtimeCoverage.properties.allowUnidentifiedRuntime.default, true);
 });
 
