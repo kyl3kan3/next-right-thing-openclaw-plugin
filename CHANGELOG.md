@@ -23,9 +23,10 @@ always-on `before_tool_call` approval gate that needs **no** hook permission.
   longer required by default. Only the `before_tool_call` core gate is required.
   Set `REQUIRE_RUN_CONTEXT=1` / `REQUIRE_RUNTIME_COVERAGE=1` to require the opt-in
   hooks once you have enabled them.
-- **`index.ts` / `index.js`** no longer duplicate the config schema; the plugin's
-  built-in schema is the single source of truth, removing the byte-identical
-  drift between the two entrypoints.
+- **Removed the redundant `index.ts`.** It was byte-identical to `index.js` (which
+  `package.json#openclaw.extensions` references), so it carried no TypeScript value
+  and only risked drift. `index.js` is now the single plugin entry. The plugin's
+  built-in schema remains the single source of truth for config shape and defaults.
 - **Docs:** the README now leads with an explicit **Scope & charter** statement
   (always-on core gate vs. opt-in layers vs. separate heartbeat companion vs. the
   out-of-scope Python sidecar), and the install/config sections reflect opt-in
