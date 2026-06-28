@@ -8,6 +8,11 @@ SKIP_RESTART="${SKIP_RESTART:-0}"
 REQUIRE_SAFE_EXEC_POLICY="${REQUIRE_SAFE_EXEC_POLICY:-1}"
 REQUIRE_GATEWAY_EXEC_HOST="${REQUIRE_GATEWAY_EXEC_HOST:-1}"
 REQUIRE_NATIVE_HOOK_RELAY="${REQUIRE_NATIVE_HOOK_RELAY:-1}"
+# The run context (before_prompt_build) and runtime coverage (before_agent_run) hooks
+# are opt-in layers (default off), so they are not required by default. Set these to 1
+# when you have enabled those layers and want the verifier to prove they registered.
+REQUIRE_RUN_CONTEXT="${REQUIRE_RUN_CONTEXT:-0}"
+REQUIRE_RUNTIME_COVERAGE="${REQUIRE_RUNTIME_COVERAGE:-0}"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 
 log() {
@@ -62,17 +67,25 @@ if ! grep -q '"status": "loaded"' "$inspect_file"; then
   printf 'runtime inspect output did not show status: loaded\n' >&2
   exit 11
 fi
-if ! grep -q '"before_prompt_build"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_prompt_build hook; set plugins.entries.%s.hooks.allowPromptInjection=true for the model-wide NRT context\n' "$PLUGIN_ID" >&2
-  exit 12
-fi
-if ! grep -q '"before_agent_run"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_agent_run hook; set plugins.entries.%s.hooks.allowConversationAccess=true for the runtime coverage gate\n' "$PLUGIN_ID" >&2
-  exit 13
-fi
 if ! grep -q '"before_tool_call"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_tool_call hook\n' >&2
+  printf 'runtime inspect output did not show before_tool_call hook (the always-on approval gate)\n' >&2
   exit 14
+fi
+if grep -q '"before_prompt_build"' "$inspect_file"; then
+  log "run-context hook present (before_prompt_build)"
+elif [ "$REQUIRE_RUN_CONTEXT" = "1" ]; then
+  printf 'runtime inspect output did not show before_prompt_build hook; enable runContext and set plugins.entries.%s.hooks.allowPromptInjection=true for the model-wide NRT context\n' "$PLUGIN_ID" >&2
+  exit 12
+else
+  printf 'note: before_prompt_build (run context) not registered. It is opt-in; enable runContext + allowPromptInjection to use it, and set REQUIRE_RUN_CONTEXT=1 to require it here.\n'
+fi
+if grep -q '"before_agent_run"' "$inspect_file"; then
+  log "runtime-coverage hook present (before_agent_run)"
+elif [ "$REQUIRE_RUNTIME_COVERAGE" = "1" ]; then
+  printf 'runtime inspect output did not show before_agent_run hook; enable runtimeCoverage.enforce and set plugins.entries.%s.hooks.allowConversationAccess=true for the runtime coverage gate\n' "$PLUGIN_ID" >&2
+  exit 13
+else
+  printf 'note: before_agent_run (runtime coverage) not registered. It is opt-in; enable runtimeCoverage.enforce + allowConversationAccess to use it, and set REQUIRE_RUNTIME_COVERAGE=1 to require it here.\n'
 fi
 if grep -q 'allowPromptInjection=true\|allowConversationAccess=true' "$inspect_file"; then
   cat <<'EOF'
@@ -197,9 +210,10 @@ Gated:
 Run: vercel deploy --prod
 
 Expected result:
-Any model that reaches OpenClaw's hook runner should receive the Next Right
-Thing run context. OpenClaw-owned tools should show a next-right-thing approval
-prompt instead of executing directly. Codex app-server native shell tools must
+OpenClaw-owned tools should show a next-right-thing approval prompt instead of
+executing directly (this is the always-on core gate). If you have enabled the
+opt-in run context, any model that reaches OpenClaw's hook runner also receives
+the Next Right Thing run context. Codex app-server native shell tools must
 also be gateway-routed (`tools.exec.host="gateway"`) so their native hooks can
 call `openclaw hooks relay` and reach the same pre-tool policy. Runtime/provider
 ids are blocked before inference only when strict runtimeCoverage blocking is

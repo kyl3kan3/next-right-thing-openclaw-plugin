@@ -8,8 +8,10 @@ export default createNextRightThingPlugin(definePluginEntry, {
     timeoutMs: 60_000,
     timeoutBehavior: "deny",
   },
-  // Built-in reflective deliberation runs by default (no runtime needed). Tune or
-  // disable it here; extra review lenses are merged with the defaults (critic/verifier).
+  // Built-in reflective deliberation is opt-in (default off, no runtime needed).
+  // Enable it here; extra review lenses are merged with the defaults (critic/verifier).
+  // Note: this registers the before_agent_finalize hook, which needs the
+  // allowConversationAccess hook permission granted on the plugin entry.
   reflection: {
     enabled: true,
     reviewRoles: ["security"], // merged with the built-in critic/verifier defaults

@@ -386,9 +386,11 @@ function runtimeCoverageBlock(reason, message, identity, extra = {}) {
 
 /**
  * Confirm that the Next Right Thing layer is present before model inference.
- * By default this is model-agnostic: any runtime that reaches this hook can run.
- * Operators can opt into strict blocking for specific runtime/provider ids, or
- * require exposed identity, when they need hard tool-coverage enforcement.
+ * This is an opt-in layer: it does nothing unless `enforce` is explicitly set.
+ * When enforced it is still model-agnostic by default (any runtime that reaches
+ * the hook can run); operators can additionally opt into strict blocking for
+ * specific runtime/provider ids, or require exposed identity, when they need
+ * hard tool-coverage enforcement.
  *
  * @param {object} event - The `before_agent_run` event.
  * @param {object} [ctx] - The OpenClaw hook context.
@@ -396,7 +398,7 @@ function runtimeCoverageBlock(reason, message, identity, extra = {}) {
  * @returns {object} A pass/block input-gate decision.
  */
 export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
-  if (!normalizeBoolean(options.enforce, true)) {
+  if (!normalizeBoolean(options.enforce, false)) {
     return { outcome: "pass" };
   }
 
@@ -434,14 +436,14 @@ export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
 /**
  * Inject the model-agnostic Next Right Thing operating context before prompt
  * construction so runtimes without finalize-hook support still receive the
- * protocol.
+ * protocol. Opt-in: returns undefined unless `enabled` is explicitly set.
  *
  * @param {object} event - The `before_prompt_build` event.
  * @param {object} [options] - Run-context policy.
  * @returns {object|undefined} A prompt-build mutation, or undefined when off.
  */
 export function beforePromptBuildDecision(event = {}, options = {}) {
-  if (!normalizeBoolean(options.enabled, true)) {
+  if (!normalizeBoolean(options.enabled, false)) {
     return undefined;
   }
   const instruction = boundedText(
@@ -739,14 +741,15 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
  * the model restate its goal, prove the work is actually done, name the next right
  * thing if not, and self-review through the configured review lenses. A stable
  * idempotency key plus `maxAttempts` (default 1) make it a one-shot, so it asks once
- * and then lets finalize proceed — never an infinite loop.
+ * and then lets finalize proceed — never an infinite loop. Opt-in: returns undefined
+ * unless `enabled` is explicitly set.
  *
  * @param {object} event - The `before_agent_finalize` event (unused today; kept for parity).
  * @param {object} [options] - { enabled, reviewRoles, instruction, idempotencyKey, maxAttempts }.
  * @returns {object|undefined} A revise decision, or `undefined` to allow finalize.
  */
 export function reflectiveFinalizeDecision(event, options = {}) {
-  if (!normalizeBoolean(options.enabled, true)) {
+  if (!normalizeBoolean(options.enabled, false)) {
     return undefined;
   }
 
@@ -776,10 +779,13 @@ export function reflectiveFinalizeDecision(event, options = {}) {
 }
 
 /**
- * Create the OpenClaw plugin entry, registering the model-agnostic run context,
- * runtime preflight, `before_tool_call` approval gate, and
- * `before_agent_finalize` deliberation gate (built-in reflection by default,
- * composing ahead of any supplied `loadCompletionAudit`).
+ * Create the OpenClaw plugin entry. The `before_tool_call` approval gate is
+ * always registered (the core, no permission needed). The run context
+ * (`before_prompt_build`), runtime preflight (`before_agent_run`), and
+ * `before_agent_finalize` deliberation gate are opt-in (default off) and register
+ * only when enabled; when reflection is enabled it composes ahead of any supplied
+ * `loadCompletionAudit`. A wired `loadCompletionAudit` also registers the finalize
+ * gate on its own.
  *
  * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
  * @param {object} [options] - Plugin metadata, tool/finalize policy, reflection, and audit loader.
@@ -795,7 +801,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
     name: options.name ?? "Next Right Thing",
     description:
       options.description ??
-      "Adds Next Right Thing run context, approval gates, and completion-audit review hooks.",
+      "Adds the Next Right Thing approval gate (always on), with opt-in run context, runtime coverage, and finalize reflection.",
     configSchema:
       options.configSchema ?? {
         type: "object",
@@ -806,7 +812,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean", default: true },
+              enabled: { type: "boolean", default: false },
               reviewRoles: {
                 type: "array",
                 items: {
@@ -821,7 +827,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean", default: true },
+              enabled: { type: "boolean", default: false },
               instruction: { type: "string" },
             },
           },
@@ -829,7 +835,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enforce: { type: "boolean", default: true },
+              enforce: { type: "boolean", default: false },
               allowUnidentifiedRuntime: { type: "boolean", default: true },
               blockedRuntimeIds: { type: "array", items: { type: "string" } },
               blockedProviderIds: { type: "array", items: { type: "string" } },
@@ -848,20 +854,27 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       const pluginConfig = api?.pluginConfig ?? api?.config ?? {};
       const pluginConfigTimeout = normalizeNumber(pluginConfig.approvalTimeoutMs, undefined);
 
+      // The `before_tool_call` approval gate is the always-on core and needs no
+      // special hook permission. The three additional layers — run context
+      // (`before_prompt_build`), runtime coverage (`before_agent_run`), and finalize
+      // reflection (`before_agent_finalize`) — are OPT-IN (default off), because each
+      // shapes or audits the turn rather than merely gating a tool, and each needs an
+      // operator-granted hook permission (allowPromptInjection / allowConversationAccess).
+      // A deliberately-off plugin must not claim those permissioned hooks for a no-op.
+      //
       // Reflection value precedence (reviewRoles, maxAttempts, per-turn enable/disable):
       // per-call (event.context.pluginConfig) > plugin-level (api.pluginConfig) > static
       // options.reflection > built-in defaults — resolved per-call in the handler below.
       // Whether the finalize hook is REGISTERED at all is a startup decision from the
-      // static/plugin `enabled` flag (default true) or a wired audit loader: a per-call
+      // static/plugin `enabled` flag (default off) or a wired audit loader: a per-call
       // override can disable or tune reflection on a registered hook, but cannot register
-      // it when reflection is globally disabled. This keeps a deliberately-off plugin from
-      // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
+      // it when reflection is globally disabled.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
-      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
+      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, false);
       const baseRunContext = { ...(options.runContext ?? {}), ...(pluginConfig.runContext ?? {}) };
-      const runContextEnabled = normalizeBoolean(baseRunContext.enabled, true);
+      const runContextEnabled = normalizeBoolean(baseRunContext.enabled, false);
       const baseRuntimeCoverage = { ...(options.runtimeCoverage ?? {}), ...(pluginConfig.runtimeCoverage ?? {}) };
-      const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, true);
+      const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, false);
 
       if (runContextEnabled) {
         api.on(
