@@ -1,8 +1,15 @@
 # Scope Review — Next Right Thing OpenClaw Plugin
 
-A review of the current repository (`v0.3.4` + Unreleased) against the **original
-scope** established by the published scaffold (`19e52d3`, "Publish OpenClaw
-plugin scaffold", v0.2.x).
+A review of the repository against the **original scope** established by the
+published scaffold (`19e52d3`, "Publish OpenClaw plugin scaffold", v0.2.x).
+
+> **Status: addressed.** This document is the diagnosis that motivated the
+> realignment; its §8 recommendations have since been implemented. The three
+> expansion hooks (run-context, finalize reflection, runtime-coverage) now default
+> **off / opt-in**; the heartbeat is split into its own `@next-right-thing/heartbeat`
+> package; and the Python-sidecar de-scope is stated in the README's "Scope &
+> charter." Sections 4–6 below describe the *pre-realignment* state and are kept as
+> the historical record — read them as "what we found," not "what ships today."
 
 ## 1. What the original scope was
 
@@ -151,13 +158,13 @@ original scope, not only additions.
 
 ## 7. Minor / packaging notes
 
-- `index.js` and `index.ts` are byte-identical; only `index.js` is referenced by
-  `package.json#openclaw.extensions`. The `.ts` copy is documentation/parity
-  only — consider dropping one to avoid drift between them.
+- ~~`index.js` and `index.ts` are byte-identical~~ — **resolved:** the redundant
+  `index.ts` was dropped; `index.js` (referenced by `package.json#openclaw.extensions`)
+  is the single entry.
 - `package.json` is `"private": true` while the README documents
-  `openclaw plugins install git:...` (install-from-git, not from npm), so the
-  private flag is harmless here but inconsistent with a "publishable plugin"
-  reading.
+  `openclaw plugins install git:...` (install-from-git, not from npm). **Intentional:**
+  the plugin is distributed by git, never published to npm, so `private: true` is a
+  deliberate guard against accidental publish — not a defect.
 
 ## 8. Recommendation
 
