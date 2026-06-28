@@ -19,20 +19,17 @@ hook when you ask for it:
 ## Install
 
 ```bash
-openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@v0.3.4-openclaw
+openclaw plugins install git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@main
 openclaw plugins enable next-right-thing
 openclaw gateway restart
 openclaw plugins inspect next-right-thing --runtime --json
 ```
 
-> Installs the current stable release. To test unreleased changes instead, replace
-> the tag with `@main`.
-
-> **Version note:** the opt-in defaults described here (only `before_tool_call` registered
-> out of the box; `reflection` / `runContext` / `runtimeCoverage` off) are on **`@main`** and
-> ship in the next tagged release. The pinned `@v0.3.4-openclaw` predates this refocus and
-> still registers the finalize/run-context/coverage hooks by default — install `@main` to
-> get the behavior below.
+> **Version note:** the opt-in defaults this page describes (only `before_tool_call`
+> registered out of the box; `reflection` / `runContext` / `runtimeCoverage` off) live on
+> **`@main`**, which is why the commands here pin `@main`. The last tagged release
+> `@v0.3.4-openclaw` predates this refocus and still registers the finalize/run-context/
+> coverage hooks by default; a new tag will follow.
 
 The approval gate works out of the box — **no extra permission grant required**. A plain
 install registers only `before_tool_call`.
@@ -56,7 +53,7 @@ install registers only `before_tool_call`.
 On the OpenClaw host, run the packaged verification script:
 
 ```bash
-curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/kyl3kan3/next-right-thing-openclaw-plugin/v0.3.4-openclaw/scripts/verify-openclaw-install.sh
+curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/kyl3kan3/next-right-thing-openclaw-plugin/main/scripts/verify-openclaw-install.sh
 bash /tmp/verify-openclaw-install.sh
 ```
 

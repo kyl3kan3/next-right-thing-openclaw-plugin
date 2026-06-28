@@ -64,7 +64,7 @@ export default createNextRightThingPlugin(definePluginEntry, {
             type: "boolean",
             default: false,
             description:
-              "Opt in to the before_agent_run runtime-coverage preflight before model inference (default false; strict-coverage layer).",
+              "Opt in to the before_agent_run runtime-coverage preflight before model inference (default false; strict-coverage layer). Requires hooks.allowConversationAccess.",
           },
           allowUnidentifiedRuntime: {
             type: "boolean",

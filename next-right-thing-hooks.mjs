@@ -782,10 +782,12 @@ export function reflectiveFinalizeDecision(event, options = {}) {
 }
 
 /**
- * Create the OpenClaw plugin entry, registering the model-agnostic run context,
- * runtime preflight, `before_tool_call` approval gate, and
- * `before_agent_finalize` deliberation gate (built-in reflection by default,
- * composing ahead of any supplied `loadCompletionAudit`).
+ * Create the OpenClaw plugin entry. A plain install always registers only the
+ * `before_tool_call` approval gate; the run-context (`before_prompt_build`),
+ * runtime-coverage (`before_agent_run`), and finalize (`before_agent_finalize`)
+ * layers are opt-in and register only when enabled (finalize also registers when
+ * a `loadCompletionAudit` loader is wired; an audit revise composes ahead of the
+ * built-in reflection).
  *
  * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
  * @param {object} [options] - Plugin metadata, tool/finalize policy, reflection, and audit loader.
@@ -905,9 +907,9 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       );
 
       // Register the finalize gate when an external audit is wired OR built-in
-      // reflection is enabled (the default). The handler composes them: a real audit
-      // revise outranks reflection, and the two use distinct idempotency keys so the
-      // host never double-revises.
+      // reflection is explicitly enabled (off by default). The handler composes them: a
+      // real audit revise outranks reflection, and the two use distinct idempotency keys
+      // so the host never double-revises.
       if (typeof options.loadCompletionAudit === "function" || reflectionEnabled) {
         api.on(
           "before_agent_finalize",

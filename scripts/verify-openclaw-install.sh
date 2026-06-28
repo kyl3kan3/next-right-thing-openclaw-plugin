@@ -70,7 +70,7 @@ fi
 # The three optional layers are opt-in (default off); report which are active.
 for hook_cfg in \
   'before_prompt_build:runContext.enabled / allowPromptInjection' \
-  'before_agent_run:runtimeCoverage.enforce' \
+  'before_agent_run:runtimeCoverage.enforce + allowConversationAccess' \
   'before_agent_finalize:reflection.enabled / allowConversationAccess'; do
   hook_name="${hook_cfg%%:*}"
   hook_knob="${hook_cfg#*:}"
@@ -193,13 +193,14 @@ Gated:
 Run: vercel deploy --prod
 
 Expected result:
-Any model that reaches OpenClaw's hook runner should receive the Next Right
-Thing run context. OpenClaw-owned tools should show a next-right-thing approval
-prompt instead of executing directly. Codex app-server native shell tools must
-also be gateway-routed (`tools.exec.host="gateway"`) so their native hooks can
-call `openclaw hooks relay` and reach the same pre-tool policy. Runtime/provider
-ids are blocked before inference only when strict runtimeCoverage blocking is
-explicitly configured.
+OpenClaw-owned tools should show a next-right-thing approval prompt instead of
+executing directly (the always-on approval gate). If runContext.enabled is set,
+any model reaching OpenClaw's hook runner also receives the Next Right Thing run
+context. Codex app-server native shell tools must also be gateway-routed
+(`tools.exec.host="gateway"`) so their native hooks can call `openclaw hooks
+relay` and reach the same pre-tool policy. Runtime/provider ids are blocked
+before inference only when strict runtimeCoverage blocking is explicitly
+configured.
 
 For CLI JSON smoke tests, use a healthy Gateway or force the embedded local
 runner with `openclaw agent --local --json ...`. If the result reports
