@@ -396,7 +396,9 @@ function runtimeCoverageBlock(reason, message, identity, extra = {}) {
  * @returns {object} A pass/block input-gate decision.
  */
 export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
-  if (!normalizeBoolean(options.enforce, true)) {
+  // Opt-in: runtime-coverage enforcement is off by default (the refocus keeps the
+  // plugin a reactive guardrail; this preflight is an optional strict-coverage layer).
+  if (!normalizeBoolean(options.enforce, false)) {
     return { outcome: "pass" };
   }
 
@@ -441,7 +443,9 @@ export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
  * @returns {object|undefined} A prompt-build mutation, or undefined when off.
  */
 export function beforePromptBuildDecision(event = {}, options = {}) {
-  if (!normalizeBoolean(options.enabled, true)) {
+  // Opt-in: run-context injection is off by default (optional shaping layer, not the
+  // reactive guardrail core).
+  if (!normalizeBoolean(options.enabled, false)) {
     return undefined;
   }
   const instruction = boundedText(
@@ -746,7 +750,9 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
  * @returns {object|undefined} A revise decision, or `undefined` to allow finalize.
  */
 export function reflectiveFinalizeDecision(event, options = {}) {
-  if (!normalizeBoolean(options.enabled, true)) {
+  // Opt-in: reflection fires only when explicitly enabled — the no-runtime fallback
+  // for `loadCompletionAudit`, not a default tax on every finalize.
+  if (!normalizeBoolean(options.enabled, false)) {
     return undefined;
   }
 
@@ -806,7 +812,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean", default: true },
+              enabled: { type: "boolean", default: false },
               reviewRoles: {
                 type: "array",
                 items: {
@@ -821,7 +827,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean", default: true },
+              enabled: { type: "boolean", default: false },
               instruction: { type: "string" },
             },
           },
@@ -829,7 +835,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enforce: { type: "boolean", default: true },
+              enforce: { type: "boolean", default: false },
               allowUnidentifiedRuntime: { type: "boolean", default: true },
               blockedRuntimeIds: { type: "array", items: { type: "string" } },
               blockedProviderIds: { type: "array", items: { type: "string" } },
@@ -848,20 +854,19 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       const pluginConfig = api?.pluginConfig ?? api?.config ?? {};
       const pluginConfigTimeout = normalizeNumber(pluginConfig.approvalTimeoutMs, undefined);
 
-      // Reflection value precedence (reviewRoles, maxAttempts, per-turn enable/disable):
-      // per-call (event.context.pluginConfig) > plugin-level (api.pluginConfig) > static
-      // options.reflection > built-in defaults — resolved per-call in the handler below.
-      // Whether the finalize hook is REGISTERED at all is a startup decision from the
-      // static/plugin `enabled` flag (default true) or a wired audit loader: a per-call
-      // override can disable or tune reflection on a registered hook, but cannot register
-      // it when reflection is globally disabled. This keeps a deliberately-off plugin from
-      // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
+      // Refocus: the approval gate is the always-on core. The three shaping/checking
+      // layers — run-context injection, runtime-coverage preflight, and finalize
+      // reflection — are all OPT-IN (default off). Whether each hook is REGISTERED at
+      // all is a startup decision from its static/plugin flag (or, for finalize, a wired
+      // audit loader); a per-call override can disable/tune a registered hook but cannot
+      // register one that is globally off. So a plain install claims ONLY
+      // `before_tool_call` and needs no prompt-injection / conversation-access grant.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
-      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
+      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, false);
       const baseRunContext = { ...(options.runContext ?? {}), ...(pluginConfig.runContext ?? {}) };
-      const runContextEnabled = normalizeBoolean(baseRunContext.enabled, true);
+      const runContextEnabled = normalizeBoolean(baseRunContext.enabled, false);
       const baseRuntimeCoverage = { ...(options.runtimeCoverage ?? {}), ...(pluginConfig.runtimeCoverage ?? {}) };
-      const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, true);
+      const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, false);
 
       if (runContextEnabled) {
         api.on(

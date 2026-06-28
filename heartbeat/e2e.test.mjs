@@ -124,39 +124,36 @@ test("E2E: the registered before_tool_call hook gates a risky action and allows 
   assert.equal(benign, undefined, "a harmless read passes the gate silently");
 });
 
-test("E2E: the registered before_prompt_build hook injects model-agnostic NRT context", async () => {
-  const { names, promptHook } = registerPlugin();
-  assert.ok(names.includes("before_prompt_build"), "run context hook is registered");
-  assert.ok(promptHook, "before_prompt_build handler is callable");
+test("E2E: by default only the approval gate registers; the three layers are opt-in", () => {
+  const { names } = registerPlugin();
+  assert.deepEqual(names, ["before_tool_call"], "a plain install claims only the approval gate");
+});
 
+test("E2E: opt-in before_prompt_build injects model-agnostic NRT context", async () => {
+  const { names, promptHook } = registerPlugin({ runContext: { enabled: true } });
+  assert.ok(names.includes("before_prompt_build"), "run context hook registers when opted in");
   const decision = await promptHook({ prompt: "do it", messages: [] }, {});
   assert.match(decision?.prependSystemContext ?? "", /Next Right Thing protocol is active/);
   assert.match(decision?.prependSystemContext ?? "", /OpenClaw-covered tools/);
 });
 
-test("E2E: the registered before_agent_run hook is model-agnostic by default", async () => {
-  const { names, runHook } = registerPlugin();
-  assert.ok(names.includes("before_agent_run"), "runtime coverage gate is registered");
-  assert.ok(runHook, "before_agent_run handler is callable");
+test("E2E: opt-in before_agent_run is model-agnostic (passes covered/uncovered alike)", async () => {
+  const { names, runHook } = registerPlugin({ runtimeCoverage: { enforce: true } });
+  assert.ok(names.includes("before_agent_run"), "runtime coverage gate registers when enforced");
 
-  const covered = await runHook(
-    { prompt: "do it", messages: [] },
-    { modelProviderId: "openai", modelId: "gpt-5.5" },
-  );
-  assert.deepEqual(covered, { outcome: "pass" }, "OpenClaw embedded/provider-identified runs pass");
-
+  const covered = await runHook({ prompt: "do it", messages: [] }, { modelProviderId: "openai", modelId: "gpt-5.5" });
+  assert.deepEqual(covered, { outcome: "pass" });
   const claude = await runHook(
     { prompt: "do it", messages: [] },
     { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
   );
-  assert.deepEqual(claude, { outcome: "pass" }, "non-OpenAI models can still run under the NRT layer");
-
+  assert.deepEqual(claude, { outcome: "pass" });
   const unidentified = await runHook({ prompt: "do it", messages: [] }, {});
-  assert.deepEqual(unidentified, { outcome: "pass" }, "unidentified runtimes pass when the hook itself is invoked");
+  assert.deepEqual(unidentified, { outcome: "pass" });
 });
 
-test("E2E: strict runtime coverage policy can still block uncovered runtime ids", async () => {
-  const { runHook } = registerPlugin({ runtimeCoverage: { blockedRuntimeIds: ["claude-cli"] } });
+test("E2E: strict runtime coverage policy can block uncovered runtime ids (when enforced)", async () => {
+  const { runHook } = registerPlugin({ runtimeCoverage: { enforce: true, blockedRuntimeIds: ["claude-cli"] } });
   const blocked = await runHook(
     { prompt: "do it", messages: [] },
     { agentRuntimeId: "claude-cli", modelProviderId: "anthropic", modelId: "claude-sonnet-4-6" },
@@ -165,9 +162,9 @@ test("E2E: strict runtime coverage policy can still block uncovered runtime ids"
   assert.equal(blocked?.category, "runtime_coverage");
 });
 
-test("E2E: the registered before_agent_finalize hook forces a one-shot reflection that cannot loop", async () => {
-  const { finalizeHook } = registerPlugin();
-  assert.ok(finalizeHook, "finalize gate is registered by default");
+test("E2E: opt-in reflection registers a one-shot finalize revise that cannot loop", async () => {
+  const { finalizeHook } = registerPlugin({ reflection: { enabled: true } });
+  assert.ok(finalizeHook, "opt-in reflection registers the finalize gate");
 
   const first = await finalizeHook({});
   assert.equal(first?.action, "revise");
@@ -175,16 +172,13 @@ test("E2E: the registered before_agent_finalize hook forces a one-shot reflectio
   assert.equal(first.retry.idempotencyKey, REFLECTION_KEY);
   assert.equal(first.retry.maxAttempts, 1, "one-shot: the host runs it once then proceeds");
 
-  // Invoking again yields the SAME stable idempotency key, so OpenClaw dedupes it
-  // rather than revising forever.
   const second = await finalizeHook({});
   assert.equal(second.retry.idempotencyKey, first.retry.idempotencyKey);
 });
 
 test("E2E: per-call pluginConfig flows through the registered surface (timeout threads in, reflection can disable)", async () => {
-  const { toolHook, finalizeHook } = registerPlugin();
+  const { toolHook, finalizeHook } = registerPlugin({ reflection: { enabled: true } });
 
-  // approvalTimeoutMs supplied per-call is honored on the produced approval.
   const gated = await toolHook({
     toolName: "exec",
     params: { cmd: "vercel deploy --prod" },
@@ -192,21 +186,19 @@ test("E2E: per-call pluginConfig flows through the registered surface (timeout t
   });
   assert.equal(gated?.requireApproval?.timeoutMs, 1234, "per-call approvalTimeoutMs wins");
 
-  // A per-call reflection disable turns the registered finalize hook into a no-op
-  // for that turn (the hook stays registered; it just declines to revise).
   const quiet = await finalizeHook({ context: { pluginConfig: { reflection: { enabled: false } } } });
   assert.equal(quiet, undefined, "per-call reflection.enabled:false suppresses the revise");
 });
 
-test("E2E: with reflection globally off and no audit loader, the finalize hook is NOT registered (guards conversation-access)", () => {
-  const { names } = registerPlugin({ reflection: { enabled: false } });
-  assert.ok(names.includes("before_prompt_build"), "the run context hook still loads");
-  assert.ok(names.includes("before_agent_run"), "the runtime coverage gate still loads");
-  assert.ok(names.includes("before_tool_call"), "the approval gate still loads");
-  assert.ok(
-    !names.includes("before_agent_finalize"),
-    "a deliberately-off plugin does not claim the conversation-access finalize hook for a no-op",
-  );
+test("E2E: by default (all layers off, no audit) the finalize hook is NOT registered (guards conversation-access)", () => {
+  for (const opts of [{}, { reflection: { enabled: false } }]) {
+    const { names } = registerPlugin(opts);
+    assert.ok(names.includes("before_tool_call"), "the approval gate still loads");
+    assert.ok(
+      !names.includes("before_agent_finalize"),
+      "a guardrail-only plugin does not claim the conversation-access finalize hook",
+    );
+  }
 });
 
 test("E2E: a wired completion audit composes AHEAD of reflection, and they never double-revise", async () => {
@@ -222,9 +214,10 @@ test("E2E: a wired completion audit composes AHEAD of reflection, and they never
   assert.equal(audited.retry.idempotencyKey, AUDIT_KEY, "audit revise outranks reflection");
   assert.match(audited.retry.instruction, /production proof/);
 
-  // Audit says complete → audit yields nothing, so built-in reflection runs instead.
+  // Audit complete + reflection opted in → audit yields nothing, so reflection runs.
   const complete = registerPlugin({
     loadCompletionAudit: async () => ({ status: "complete", requirements: [] }),
+    reflection: { enabled: true },
   });
   const reflected = await complete.finalizeHook({});
   assert.equal(reflected?.action, "revise");

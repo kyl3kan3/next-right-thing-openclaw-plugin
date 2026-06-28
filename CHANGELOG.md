@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed (refocus: one always-on gate, three opt-in layers)
+
+A "rethink" review found the plugin had drifted from its original purpose — a reactive guardrail that
+wraps prepared turns and never drives the agent. The refocus keeps every feature but makes the
+non-core layers **opt-in (default off)**, so a plain install is the minimal guardrail again:
+
+- **Only `before_tool_call` (the approval gate) registers by default.** It needs **no permission grant**.
+- **`reflection.enabled`, `runContext.enabled`, and `runtimeCoverage.enforce` all default to `false`**
+  across the runtime and all schema copies. Each registers its hook (`before_agent_finalize`,
+  `before_prompt_build`, `before_agent_run`) only when turned on (or, for finalize, when a
+  `loadCompletionAudit` loader is wired). Permissions (`allowConversationAccess`,
+  `allowPromptInjection`) are required only for the layers you actually enable.
+- Docs (README, `openclaw-adapter.md`) and the install verifier reframed accordingly: the verifier now
+  **requires only the approval gate** and reports which optional layers are active. The `heartbeat/`
+  companion is documented as a separate autonomous driver, intended for extraction into its own package.
+
 ### Fixed (effect-inference completeness — found by the E2E adversarial workflow)
 
 Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced through the
