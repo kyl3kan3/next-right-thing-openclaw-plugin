@@ -112,7 +112,7 @@ Wire `loadCompletionAudit` to the Python supervisor:
 python runtime/nrt_supervisor.py audit --state .nrt/openclaw-session.json
 ```
 
-If the audit returns `status: "incomplete"`, the adapter emits a `before_agent_finalize` revise decision that tells the model what evidence is still missing. This composes with the built-in reflection: the audit is checked first and an audit `revise` wins; if the audit is complete (or no loader is wired), the built-in reflective deliberation runs instead. The two never double-revise on the same attempt and carry distinct idempotency keys.
+If the audit returns `status: "incomplete"`, the adapter emits a `before_agent_finalize` revise decision that tells the model what evidence is still missing. This composes with the built-in reflection **only when you opt into it** (`reflection.enabled: true`): the audit is checked first and an audit `revise` wins; if the audit is complete (or no loader is wired) **and** `reflection.enabled: true`, the built-in reflective deliberation runs instead. With neither a `loadCompletionAudit` loader nor `reflection.enabled`, the `before_agent_finalize` hook is not registered and no completion check runs at all. When both run, they never double-revise on the same attempt and carry distinct idempotency keys.
 
 ## Runtime Sidecar Commands
 
