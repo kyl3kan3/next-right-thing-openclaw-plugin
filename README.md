@@ -54,8 +54,11 @@ On the OpenClaw host, run the packaged verification script:
 
 ```bash
 curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/kyl3kan3/next-right-thing-openclaw-plugin/main/scripts/verify-openclaw-install.sh
-bash /tmp/verify-openclaw-install.sh
+PLUGIN_REF=main bash /tmp/verify-openclaw-install.sh
 ```
+
+> `PLUGIN_REF=main` makes the verifier install the same `@main` build documented above (the
+> script otherwise defaults to the last tag, which predates this refocus).
 
 For CLI-level smoke tests, use a healthy Gateway or force the embedded local
 runner with `openclaw agent --local --json ...`. If a JSON result reports

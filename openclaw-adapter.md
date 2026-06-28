@@ -60,9 +60,10 @@ through the gateway/native relay before plugin `before_tool_call` can see them.
 On OpenClaw 2026.6.10, the Codex app-server harness exposes that bridge through
 `openclaw hooks relay`; configure exec with `tools.exec.host="gateway"` so native
 Codex `PreToolUse` events can reach the same NRT approval gate as
-OpenClaw-owned dynamic tools. The default configuration still lets those models
-run under the NRT prompt context; it does not hard-block a model just because it
-is Claude CLI or another CLI backend.
+OpenClaw-owned dynamic tools. By default these models run under the approval gate
+only — they receive the model-wide NRT **prompt context** solely when you opt in
+with `runContext.enabled: true` (plus `hooks.allowPromptInjection`). The plugin
+does not hard-block a model just because it is Claude CLI or another CLI backend.
 
 If you require hard host-level tool coverage, configure strict
 `runtimeCoverage` blocking for the relevant runtime/provider ids, or require
