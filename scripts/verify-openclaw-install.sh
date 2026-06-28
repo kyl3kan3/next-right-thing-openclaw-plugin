@@ -6,6 +6,8 @@ PLUGIN_REF="${PLUGIN_REF:-v0.3.4-openclaw}"
 PLUGIN_SPEC="${PLUGIN_SPEC:-git:github.com/kyl3kan3/next-right-thing-openclaw-plugin@${PLUGIN_REF}}"
 SKIP_RESTART="${SKIP_RESTART:-0}"
 REQUIRE_SAFE_EXEC_POLICY="${REQUIRE_SAFE_EXEC_POLICY:-1}"
+REQUIRE_GATEWAY_EXEC_HOST="${REQUIRE_GATEWAY_EXEC_HOST:-1}"
+REQUIRE_NATIVE_HOOK_RELAY="${REQUIRE_NATIVE_HOOK_RELAY:-1}"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 
 log() {
@@ -45,7 +47,9 @@ fi
 
 inspect_file="$(mktemp)"
 policy_file="$(mktemp)"
-trap 'rm -f "$inspect_file" "$policy_file"' EXIT
+exec_config_file="$(mktemp)"
+relay_help_file="$(mktemp)"
+trap 'rm -f "$inspect_file" "$policy_file" "$exec_config_file" "$relay_help_file"' EXIT
 
 log "Inspect plugin runtime"
 openclaw plugins inspect "$PLUGIN_ID" --runtime --json | tee "$inspect_file"
@@ -58,16 +62,26 @@ if ! grep -q '"status": "loaded"' "$inspect_file"; then
   printf 'runtime inspect output did not show status: loaded\n' >&2
   exit 11
 fi
-if ! grep -q '"before_tool_call"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_tool_call hook\n' >&2
+if ! grep -q '"before_prompt_build"' "$inspect_file"; then
+  printf 'runtime inspect output did not show before_prompt_build hook; set plugins.entries.%s.hooks.allowPromptInjection=true for the model-wide NRT context\n' "$PLUGIN_ID" >&2
   exit 12
 fi
-if grep -q 'allowConversationAccess=true' "$inspect_file"; then
+if ! grep -q '"before_agent_run"' "$inspect_file"; then
+  printf 'runtime inspect output did not show before_agent_run hook; set plugins.entries.%s.hooks.allowConversationAccess=true for the runtime coverage gate\n' "$PLUGIN_ID" >&2
+  exit 13
+fi
+if ! grep -q '"before_tool_call"' "$inspect_file"; then
+  printf 'runtime inspect output did not show before_tool_call hook\n' >&2
+  exit 14
+fi
+if grep -q 'allowPromptInjection=true\|allowConversationAccess=true' "$inspect_file"; then
   cat <<'EOF'
 
 Note:
-The approval gate is loaded. OpenClaw reports that finalize reflection needs
-plugins.entries.next-right-thing.hooks.allowConversationAccess=true.
+The plugin is loaded, but OpenClaw reports that hook permissions are missing.
+Set plugins.entries.next-right-thing.hooks.allowPromptInjection=true for the
+model-wide NRT context and allowConversationAccess=true for runtime coverage and
+finalize reflection.
 EOF
 fi
 
@@ -80,27 +94,91 @@ if openclaw approvals get >"$policy_file" 2>&1; then
 Unsafe exec policy detected:
 At least one OpenClaw exec policy still shows security=full and ask=off.
 
-The next-right-thing before_tool_call hook covers OpenClaw-owned dynamic tools.
-Claude CLI/native shell execution is governed by OpenClaw's native exec policy,
-so YOLO exec mode can bypass this plugin's approval prompt.
+The next-right-thing before_prompt_build hook carries NRT context across models,
+before_agent_run proves the layer was invoked before inference, and
+before_tool_call covers OpenClaw-owned dynamic tools. Claude CLI/native shell
+execution can still be governed by OpenClaw's native exec policy, so YOLO exec
+mode can bypass this plugin's tool approval prompt.
 
 Recommended hardening:
   openclaw config patch --stdin <<'JSON'
-  {"tools":{"exec":{"security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+  {"tools":{"exec":{"host":"gateway","security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
   JSON
 
 Also update any agents.list[].tools.exec overrides that still set
-security=full or ask=off, then restart the gateway.
+host=local, security=full, or ask=off, then restart the gateway.
 
 Set REQUIRE_SAFE_EXEC_POLICY=0 to skip this verifier gate.
 EOF
     if [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ]; then
-      exit 13
+      exit 16
     fi
   fi
 else
   printf 'warning: could not inspect OpenClaw exec policy\n' >&2
   cat "$policy_file" >&2 || true
+fi
+
+log "Inspect OpenClaw exec host routing"
+if openclaw config get tools.exec >"$exec_config_file" 2>&1; then
+  cat "$exec_config_file"
+  if [ "$REQUIRE_GATEWAY_EXEC_HOST" = "1" ] && ! grep -Eq '"host"[[:space:]]*:[[:space:]]*"gateway"' "$exec_config_file"; then
+    cat <<'EOF' >&2
+
+Gateway exec routing is not enabled:
+tools.exec.host must be "gateway" so Codex/OpenClaw native shell execution is
+routed through the gateway-owned policy and native hook relay surfaces.
+
+Recommended hardening:
+  openclaw config patch --stdin <<'JSON'
+  {"tools":{"exec":{"host":"gateway","security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+  JSON
+
+Set REQUIRE_GATEWAY_EXEC_HOST=0 to skip this verifier gate.
+EOF
+    exit 17
+  fi
+  if [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ] && ! grep -Eq '"strictInlineEval"[[:space:]]*:[[:space:]]*true' "$exec_config_file"; then
+    cat <<'EOF' >&2
+
+strictInlineEval is not enabled:
+Set tools.exec.strictInlineEval=true so inline shell evaluation remains inside
+the OpenClaw exec policy boundary.
+
+Set REQUIRE_SAFE_EXEC_POLICY=0 to skip this verifier gate.
+EOF
+    exit 18
+  fi
+else
+  printf 'warning: could not inspect OpenClaw tools.exec config\n' >&2
+  cat "$exec_config_file" >&2 || true
+  if [ "$REQUIRE_GATEWAY_EXEC_HOST" = "1" ] || [ "$REQUIRE_SAFE_EXEC_POLICY" = "1" ]; then
+    exit 21
+  fi
+fi
+
+log "Inspect native hook relay command"
+if openclaw hooks relay --help >"$relay_help_file" 2>&1; then
+  cat "$relay_help_file"
+  if ! grep -q 'Internal native harness hook relay' "$relay_help_file"; then
+    printf 'native hook relay help did not identify the relay command\n' >&2
+    if [ "$REQUIRE_NATIVE_HOOK_RELAY" = "1" ]; then
+      exit 19
+    fi
+  fi
+else
+  cat "$relay_help_file" >&2 || true
+  if [ "$REQUIRE_NATIVE_HOOK_RELAY" = "1" ]; then
+    cat <<'EOF' >&2
+
+Native hook relay command is unavailable:
+OpenClaw must expose `openclaw hooks relay` for Codex app-server native hooks to
+bridge PreToolUse/PostToolUse/Stop events into registered plugin policy.
+
+Set REQUIRE_NATIVE_HOOK_RELAY=0 to skip this verifier gate.
+EOF
+    exit 20
+  fi
 fi
 
 log "Enabled plugin list"
@@ -119,7 +197,16 @@ Gated:
 Run: vercel deploy --prod
 
 Expected result:
-OpenClaw-owned tools should show a next-right-thing approval prompt instead of
-executing directly. Claude CLI/native shell commands should be blocked or routed
-through OpenClaw's native exec approval policy unless explicitly approved.
+Any model that reaches OpenClaw's hook runner should receive the Next Right
+Thing run context. OpenClaw-owned tools should show a next-right-thing approval
+prompt instead of executing directly. Codex app-server native shell tools must
+also be gateway-routed (`tools.exec.host="gateway"`) so their native hooks can
+call `openclaw hooks relay` and reach the same pre-tool policy. Runtime/provider
+ids are blocked before inference only when strict runtimeCoverage blocking is
+explicitly configured.
+
+For CLI JSON smoke tests, use a healthy Gateway or force the embedded local
+runner with `openclaw agent --local --json ...`. If the result reports
+meta.fallbackFrom="gateway", the Gateway request failed and the fallback result
+is not proof of hook coverage; restart the Gateway and rerun.
 EOF

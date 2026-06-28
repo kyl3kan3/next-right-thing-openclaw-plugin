@@ -28,14 +28,20 @@ See OpenClaw's plugin manifest, entrypoint, and permission request docs:
 
 ## Hook Mapping
 
-The shipped entry (`index.js`) always registers `before_tool_call` (the approval gate). It registers `before_agent_finalize` **only when the completion check is opted into** — either a wired `loadCompletionAudit` or `reflection.enabled: true` (off by default). `after_tool_call` and `agent_end` are documented integration points but are **not** registered by the default entry.
+The shipped entry (`index.js`) registers `before_prompt_build`,
+`before_agent_run`, `before_tool_call`, and `before_agent_finalize` (the latter
+is on by default for built-in reflective deliberation). `after_tool_call` and
+`agent_end` are documented integration points but are **not** registered by the
+default entry.
 
+- `before_prompt_build` (registered by default; **requires** `hooks.allowPromptInjection: true` on the plugin entry): inject the model-agnostic Next Right Thing operating context into the system prompt, so any model that reaches OpenClaw's hook runner is told to pick the smallest useful next step, preserve evidence, use OpenClaw-covered tools for risky operations, and prove completion before finalizing. Disable or replace via `runContext`.
+- `before_agent_run` (registered by default; **requires** `hooks.allowConversationAccess: true` on the plugin entry): preflight that proves the NRT plugin layer was invoked before inference. By default it is model-agnostic and passes Claude CLI, Anthropic, OpenAI, and unidentified runtimes. Operators can opt into strict blocking with `runtimeCoverage.blockedRuntimeIds`, `runtimeCoverage.blockedProviderIds`, or `runtimeCoverage.allowUnidentifiedRuntime: false`; blocks return `category: "runtime_coverage"`.
 - `before_tool_call` (registered): infer side effects from OpenClaw-owned dynamic tool calls and request approval for production mutation, destructive operations, publishing, messaging, auth changes, billing changes, or security exposure. Side-effect inference scans both the command string and the serialized tool params, so it catches:
   - destructive shell commands such as recursive-force deletes, hard resets, forced cleans, forced pushes, recursive PowerShell removal, and DELETE HTTP requests;
   - destructive SQL (`DROP TABLE/DATABASE/SCHEMA`, `DELETE FROM`, `TRUNCATE`) on database- and exec-like tools (so MCP database tools that carry SQL in params are gated, while a tool merely mentioning SQL as text is not);
   - commands hidden in object-valued `input`/`script` payloads or split into `args`/`argv` arrays;
   - secret-shaped values in any tool params (not only shell commands).
-- `before_agent_finalize` (registered **only when opted into**; then **requires** `hooks.allowConversationAccess: true`, since OpenClaw gates this hook behind conversation access): impose a completion check before the agent finalizes. Preferred path is an evidence-based `loadCompletionAudit` `revise` listing what is unproven. As a no-runtime fallback, set `reflection.enabled: true` for built-in *reflective deliberation*: one `revise` asking the model to restate the goal, prove it is actually done, name the next right thing if not, and self-review through the configured review lenses — a one-shot guarded by `reflection.maxAttempts` (default 1) and a stable idempotency key. When both are wired, the audit `revise` is checked first and takes precedence; the audit and reflection paths use **distinct** idempotency keys (`next-right-thing-completion-audit` vs `next-right-thing-reflection`) so the host never conflates them. A plain install opts into neither, so this hook is not registered and no conversation-access grant is needed.
+- `before_agent_finalize` (registered by default; **requires** `hooks.allowConversationAccess: true` on the plugin entry, since OpenClaw gates this hook behind conversation access): impose deliberation before the agent finalizes. With **no** external runtime, built-in *reflective deliberation* returns one `revise` asking the model to restate the goal, prove it is actually done, name the next right thing if not, and self-review through the configured review lenses — a one-shot guarded by `reflection.maxAttempts` (default 1) and a stable idempotency key. When `loadCompletionAudit` is also supplied, an evidence-based audit `revise` is checked first and takes precedence; the audit and reflection paths use **distinct** idempotency keys (`next-right-thing-completion-audit` vs `next-right-thing-reflection`) so the host never conflates them. Disable via `reflection.enabled: false`.
 - `after_tool_call` (not registered): wire as observation-only if the host routes tool results into `runtime/nrt_supervisor.py evidence`.
 - `agent_end` (not registered): wire to flush audit logs, call `nrt scheduler run-due`, or run `nrt reviews run` for deterministic review gates when native subagents were not used.
 
@@ -49,13 +55,29 @@ Approval prompts are deliberately bounded for OpenClaw approval surfaces:
 
 ### Native runtime boundary
 
-OpenClaw runtimes that own their own native shell tools may not route those
-calls through plugin `before_tool_call`. On OpenClaw 2026.6.9, Claude CLI native
-shell execution follows OpenClaw's native exec policy instead. Keep
-`tools.exec.security=allowlist` with `tools.exec.ask=on-miss` or stricter, and
-apply the same values to any `agents.list[].tools.exec` overrides. If the
-effective policy remains `security=full` and `ask=off`, destructive Claude CLI
-shell commands can execute without this plugin seeing them.
+OpenClaw runtimes that own their own native shell tools must route those calls
+through the gateway/native relay before plugin `before_tool_call` can see them.
+On OpenClaw 2026.6.10, the Codex app-server harness exposes that bridge through
+`openclaw hooks relay`; configure exec with `tools.exec.host="gateway"` so native
+Codex `PreToolUse` events can reach the same NRT approval gate as
+OpenClaw-owned dynamic tools. The default configuration still lets those models
+run under the NRT prompt context; it does not hard-block a model just because it
+is Claude CLI or another CLI backend.
+
+If you require hard host-level tool coverage, configure strict
+`runtimeCoverage` blocking for the relevant runtime/provider ids, or require
+runtime identity with `allowUnidentifiedRuntime: false`. In all cases, keep
+`tools.exec.host=gateway`, `tools.exec.security=allowlist`,
+`tools.exec.ask=on-miss`, and `tools.exec.strictInlineEval=true` or stricter,
+and apply the same values to any `agents.list[].tools.exec` overrides. If the
+effective policy remains local/native or `security=full` and `ask=off`,
+destructive native CLI shell commands can execute without `before_tool_call`
+seeing them.
+
+When testing through `openclaw agent --json`, do not count a result with
+`meta.fallbackFrom: "gateway"` as coverage evidence. That means the Gateway
+request failed and OpenClaw used an automatic embedded fallback path; restart the
+Gateway or force `--local` and rerun the smoke.
 
 ## Minimal Use
 
@@ -89,7 +111,7 @@ Wire `loadCompletionAudit` to the Python supervisor:
 python runtime/nrt_supervisor.py audit --state .nrt/openclaw-session.json
 ```
 
-If the audit returns `status: "incomplete"`, the adapter emits a `before_agent_finalize` revise decision that tells the model what evidence is still missing. When the built-in reflection is **also opted into** (`reflection.enabled: true`), the two compose: the audit is checked first and an audit `revise` wins; if the audit is complete, the reflection runs as the fallback. Reflection is off by default, so wiring only an audit loader (without `reflection.enabled: true`) means a complete audit simply lets finalize proceed — no reflection. The two never double-revise on the same attempt and carry distinct idempotency keys.
+If the audit returns `status: "incomplete"`, the adapter emits a `before_agent_finalize` revise decision that tells the model what evidence is still missing. This composes with the built-in reflection: the audit is checked first and an audit `revise` wins; if the audit is complete (or no loader is wired), the built-in reflective deliberation runs instead. The two never double-revise on the same attempt and carry distinct idempotency keys.
 
 ## Runtime Sidecar Commands
 

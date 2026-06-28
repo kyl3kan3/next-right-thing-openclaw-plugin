@@ -1,6 +1,16 @@
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000;
 const MAX_APPROVAL_DESCRIPTION_LENGTH = 256;
 const MAX_REFLECTION_INSTRUCTION_LENGTH = 1024;
+const MAX_RUN_CONTEXT_INSTRUCTION_LENGTH = 1400;
+const DEFAULT_RUN_CONTEXT_INSTRUCTION = [
+  "Next Right Thing protocol is active for this run.",
+  "Before acting, choose the smallest useful next step that moves the active goal forward.",
+  "Prefer reversible, evidence-producing actions; ask for approval before destructive, production, publishing, messaging, auth, billing, or security-sensitive actions.",
+  "Use OpenClaw-covered tools for risky operations so plugin approvals can fire; if a native model tool would bypass OpenClaw approval, pause and ask to route that action through a covered tool/runtime.",
+  "Before finalizing, state the concrete evidence that the goal is done; if it is not done, name the next right thing instead of claiming completion.",
+].join(" ");
+const DEFAULT_RUNTIME_COVERAGE_BLOCK_MESSAGE =
+  "Next Right Thing blocked this run because OpenClaw did not expose a hook-covered tool runtime to the plugin. Route the model through OpenClaw's embedded runtime or enable a native hook relay before running agent tools.";
 // Distinct from the completion-audit key so the host never conflates the two
 // `before_agent_finalize` revise paths (audit vs built-in reflection).
 const REFLECTION_IDEMPOTENCY_KEY = "next-right-thing-reflection";
@@ -107,6 +117,8 @@ export const DB_TOOL_KEYWORDS = new Set([
 
 export const REVIEW_ROLES = new Set(["critic", "verifier", "security", "fact_checker", "memory_curator"]);
 const REVIEW_ROLE_PRIORITY = ["critic", "security", "fact_checker", "verifier", "memory_curator"];
+const DEFAULT_BLOCKED_RUNTIME_IDS = [];
+const DEFAULT_BLOCKED_PROVIDER_IDS = [];
 
 // One short self-review directive per review lens, used to compose the reflective
 // finalize instruction so the agent's contemplation is multi-perspective.
@@ -128,10 +140,11 @@ const PRODUCTION_PATTERNS = [
 ];
 
 const DESTRUCTIVE_PATTERNS = [
-  // Recursion is the irreversible part of `rm`, so gate it whether or not -f is also
-  // present (-f only suppresses prompts; `rm -r dir` still destroys a tree).
+  // File deletion is destructive even when it is a single target. Gate `rm`
+  // unless it is plainly a help invocation.
+  /(?:^|[\s"';&|])rm(?:\.exe)?\b(?!\s+(?:--help|-h)\b)(?=\s+\S)/i,
   /\brm\b(?=.*(?:\s-[a-z]*r|\s--recursive))/i,
-  /\bRemove-Item\b.*\s-Recurse\b/i,
+  /\b(?:Remove-Item|del|erase|unlink)\b(?![\s\S]*\s-(?:WhatIf|Confirm)\b)/i,
   /\bgit\b.*\breset\b.*\s--hard\b/i,
   /\bgit\b.*\bclean\b.*(?:\s-[a-z]*f|\s--force\b)/i,
   /\bgit\b.*\bpush\b.*(?:\s-[a-z]*f|\s--force(?:-with-lease)?\b|\s\+\S)/i,
@@ -203,8 +216,12 @@ function stringifyParams(params) {
   }
 }
 
+function eventParams(event) {
+  return event?.params ?? event?.arguments ?? event?.input ?? {};
+}
+
 function commandText(event) {
-  const params = event?.params ?? {};
+  const params = eventParams(event);
   return String(params.cmd ?? params.command ?? params.input ?? params.script ?? stringifyParams(params));
 }
 
@@ -296,6 +313,149 @@ function normalizeReviewRoles(roles) {
   return normalized;
 }
 
+function normalizeStringList(values, fallback = []) {
+  const raw = Array.isArray(values) ? values : values == null ? fallback : [values];
+  return [
+    ...new Set(
+      raw
+        .map((value) => String(value ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function readNestedId(value, path) {
+  let current = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return typeof current === "string" && current.trim() ? current.trim() : undefined;
+}
+
+function collectRuntimeCoverageIdentity(event = {}, ctx = {}) {
+  const sources = [event, ctx, event.context, event.ctx].filter(Boolean);
+  const readAny = (paths) =>
+    normalizeStringList(
+      sources.flatMap((source) => paths.map((path) => readNestedId(source, path))),
+      [],
+    );
+
+  return {
+    runtimeIds: readAny([
+      ["runtimeId"],
+      ["agentRuntimeId"],
+      ["agentRuntime"],
+      ["agentRuntime", "id"],
+      ["runtime", "id"],
+    ]),
+    providerIds: readAny([
+      ["provider"],
+      ["providerId"],
+      ["modelProviderId"],
+      ["model", "provider"],
+    ]),
+    modelIds: readAny([
+      ["model"],
+      ["modelId"],
+      ["model", "id"],
+    ]),
+  };
+}
+
+function callPluginConfig(event = {}) {
+  return event?.context?.pluginConfig ?? event?.context?.config ?? event?.config ?? {};
+}
+
+function runtimeCoverageBlock(reason, message, identity, extra = {}) {
+  return {
+    outcome: "block",
+    reason,
+    message: message || DEFAULT_RUNTIME_COVERAGE_BLOCK_MESSAGE,
+    category: "runtime_coverage",
+    metadata: {
+      ...(identity.runtimeIds.length ? { runtimeIds: identity.runtimeIds } : {}),
+      ...(identity.providerIds.length ? { providerIds: identity.providerIds } : {}),
+      ...(identity.modelIds.length ? { modelIds: identity.modelIds } : {}),
+      ...extra,
+    },
+  };
+}
+
+/**
+ * Confirm that the Next Right Thing layer is present before model inference.
+ * By default this is model-agnostic: any runtime that reaches this hook can run.
+ * Operators can opt into strict blocking for specific runtime/provider ids, or
+ * require exposed identity, when they need hard tool-coverage enforcement.
+ *
+ * @param {object} event - The `before_agent_run` event.
+ * @param {object} [ctx] - The OpenClaw hook context.
+ * @param {object} [options] - Runtime coverage policy.
+ * @returns {object} A pass/block input-gate decision.
+ */
+export function beforeAgentRunDecision(event = {}, ctx = {}, options = {}) {
+  if (!normalizeBoolean(options.enforce, true)) {
+    return { outcome: "pass" };
+  }
+
+  const identity = collectRuntimeCoverageIdentity(event, ctx);
+  const blockedRuntimeIds = normalizeStringList(options.blockedRuntimeIds, DEFAULT_BLOCKED_RUNTIME_IDS);
+  const blockedProviderIds = normalizeStringList(options.blockedProviderIds, DEFAULT_BLOCKED_PROVIDER_IDS);
+  const blockedRuntimeId = identity.runtimeIds.find((runtimeId) => blockedRuntimeIds.includes(runtimeId));
+  if (blockedRuntimeId) {
+    return runtimeCoverageBlock(
+      `runtime ${blockedRuntimeId} is not covered by before_tool_call`,
+      options.message,
+      identity,
+      { blockedRuntimeId },
+    );
+  }
+
+  const blockedProviderId = identity.providerIds.find((providerId) => blockedProviderIds.includes(providerId));
+  if (blockedProviderId) {
+    return runtimeCoverageBlock(
+      `provider ${blockedProviderId} is not covered by before_tool_call`,
+      options.message,
+      identity,
+      { blockedProviderId },
+    );
+  }
+
+  const hasIdentity = identity.runtimeIds.length > 0 || identity.providerIds.length > 0 || identity.modelIds.length > 0;
+  if (!hasIdentity && !normalizeBoolean(options.allowUnidentifiedRuntime, true)) {
+    return runtimeCoverageBlock("runtime coverage identity is missing", options.message, identity);
+  }
+
+  return { outcome: "pass" };
+}
+
+/**
+ * Inject the model-agnostic Next Right Thing operating context before prompt
+ * construction so runtimes without finalize-hook support still receive the
+ * protocol.
+ *
+ * @param {object} event - The `before_prompt_build` event.
+ * @param {object} [options] - Run-context policy.
+ * @returns {object|undefined} A prompt-build mutation, or undefined when off.
+ */
+export function beforePromptBuildDecision(event = {}, options = {}) {
+  if (!normalizeBoolean(options.enabled, true)) {
+    return undefined;
+  }
+  const instruction = boundedText(
+    redactSecrets(String(options.instruction ?? DEFAULT_RUN_CONTEXT_INSTRUCTION)),
+    MAX_RUN_CONTEXT_INSTRUCTION_LENGTH,
+  );
+  if (!instruction.trim()) {
+    return undefined;
+  }
+  return {
+    prependSystemContext: instruction,
+  };
+}
+
 function defaultReviewRoles(candidate) {
   const roles = [];
   const effects = normalizeEffects(candidate.effects);
@@ -328,17 +488,18 @@ function mergeReviewRoles(defaults, requested) {
  * @returns {string[]} A sorted, de-duplicated list of inferred effect identifiers.
  */
 export function inferEffectsFromToolCall(event) {
-  const toolName = String(event?.toolName ?? "");
-  const toolKind = String(event?.toolKind ?? event?.ctx?.toolKind ?? "");
+  const toolName = String(event?.toolName ?? event?.name ?? event?.tool?.name ?? "");
+  const toolKind = String(event?.toolKind ?? event?.kind ?? event?.ctx?.toolKind ?? "");
   const text = commandText(event);
-  const allParamsText = stringifyParams(event?.params);
+  const params = eventParams(event);
+  const allParamsText = stringifyParams(params);
   // Normalize JSON punctuation AND escaped whitespace (\n, \t, \r) to spaces, so a
   // command/SQL split across keys or an argv array, or carried as a multiline string,
   // still reads as spaced text the patterns can match.
   const normalizedParams = allParamsText.replace(/\\[ntr]/g, " ").replace(/[{}[\],:"]/g, " ");
   // Param VALUES joined by spaces — catches a command/SQL split across a primary field
   // and an args array (the JSON key names are dropped, unlike normalizedParams).
-  const valuesText = flattenParamValues(event?.params).join(" ");
+  const valuesText = flattenParamValues(params).join(" ");
   const lowerToolName = toolName.toLowerCase();
   const effects = new Set();
 
@@ -429,9 +590,10 @@ export function buildToolCandidate(event, overrides = {}) {
   const risk = highSeverity ? 5 : effects.length > 0 ? 4 : 1;
   const irreversibility = highSeverity ? 4 : 1;
   const approvalRequired = effects.some((effect) => HARD_EFFECTS.has(effect));
+  const toolName = String(event?.toolName ?? event?.name ?? "unknown");
   const candidate = {
-    id: overrides.id ?? `${event?.toolCallId ?? event?.runId ?? event?.toolName ?? "tool"}-candidate`,
-    title: overrides.title ?? `Run tool: ${String(event?.toolName ?? "unknown")}`,
+    id: overrides.id ?? `${event?.toolCallId ?? event?.runId ?? event?.toolName ?? event?.name ?? "tool"}-candidate`,
+    title: overrides.title ?? `Run tool: ${toolName}`,
     description: overrides.description ?? redactSecrets(commandText(event)).slice(0, 500),
     value: overrides.value ?? 3,
     urgency: overrides.urgency ?? 2,
@@ -584,9 +746,7 @@ export function finalizeDecisionFromAudit(auditResult, options = {}) {
  * @returns {object|undefined} A revise decision, or `undefined` to allow finalize.
  */
 export function reflectiveFinalizeDecision(event, options = {}) {
-  // Opt-in: reflection fires only when explicitly enabled. It is the no-runtime
-  // fallback for `loadCompletionAudit`, not a default tax on every finalize.
-  if (!normalizeBoolean(options.enabled, false)) {
+  if (!normalizeBoolean(options.enabled, true)) {
     return undefined;
   }
 
@@ -616,9 +776,10 @@ export function reflectiveFinalizeDecision(event, options = {}) {
 }
 
 /**
- * Create the OpenClaw plugin entry, registering the `before_tool_call` approval
- * gate and the `before_agent_finalize` deliberation gate (built-in reflection by
- * default, composing ahead of any supplied `loadCompletionAudit`).
+ * Create the OpenClaw plugin entry, registering the model-agnostic run context,
+ * runtime preflight, `before_tool_call` approval gate, and
+ * `before_agent_finalize` deliberation gate (built-in reflection by default,
+ * composing ahead of any supplied `loadCompletionAudit`).
  *
  * @param {Function} definePluginEntry - The OpenClaw `definePluginEntry` factory.
  * @param {object} [options] - Plugin metadata, tool/finalize policy, reflection, and audit loader.
@@ -634,7 +795,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
     name: options.name ?? "Next Right Thing",
     description:
       options.description ??
-      "Adds Next Right Thing approval gates and completion-audit review hooks.",
+      "Adds Next Right Thing run context, approval gates, and completion-audit review hooks.",
     configSchema:
       options.configSchema ?? {
         type: "object",
@@ -645,7 +806,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
             type: "object",
             additionalProperties: false,
             properties: {
-              enabled: { type: "boolean", default: false },
+              enabled: { type: "boolean", default: true },
               reviewRoles: {
                 type: "array",
                 items: {
@@ -654,6 +815,25 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
                 },
               },
               maxAttempts: { type: "integer", minimum: 1, default: 1 },
+            },
+          },
+          runContext: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enabled: { type: "boolean", default: true },
+              instruction: { type: "string" },
+            },
+          },
+          runtimeCoverage: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enforce: { type: "boolean", default: true },
+              allowUnidentifiedRuntime: { type: "boolean", default: true },
+              blockedRuntimeIds: { type: "array", items: { type: "string" } },
+              blockedProviderIds: { type: "array", items: { type: "string" } },
+              message: { type: "string" },
             },
           },
         },
@@ -672,18 +852,43 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       // per-call (event.context.pluginConfig) > plugin-level (api.pluginConfig) > static
       // options.reflection > built-in defaults — resolved per-call in the handler below.
       // Whether the finalize hook is REGISTERED at all is a startup decision from the
-      // static/plugin `enabled` flag (default FALSE — reflection is opt-in) or a wired
-      // audit loader: a per-call override can disable or tune reflection on a registered
-      // hook, but cannot register it when reflection is globally disabled. So a plain
-      // install claims NO `before_agent_finalize` (conversation-access) hook until you
-      // opt in or wire an audit — the gate alone needs no conversation-access grant.
+      // static/plugin `enabled` flag (default true) or a wired audit loader: a per-call
+      // override can disable or tune reflection on a registered hook, but cannot register
+      // it when reflection is globally disabled. This keeps a deliberately-off plugin from
+      // claiming the `before_agent_finalize` (conversation-access) hook for a no-op.
       const baseReflection = { ...(options.reflection ?? {}), ...(pluginConfig.reflection ?? {}) };
-      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, false);
+      const reflectionEnabled = normalizeBoolean(baseReflection.enabled, true);
+      const baseRunContext = { ...(options.runContext ?? {}), ...(pluginConfig.runContext ?? {}) };
+      const runContextEnabled = normalizeBoolean(baseRunContext.enabled, true);
+      const baseRuntimeCoverage = { ...(options.runtimeCoverage ?? {}), ...(pluginConfig.runtimeCoverage ?? {}) };
+      const runtimeCoverageEnforced = normalizeBoolean(baseRuntimeCoverage.enforce, true);
+
+      if (runContextEnabled) {
+        api.on(
+          "before_prompt_build",
+          async (event) => {
+            const contextOptions = { ...baseRunContext, ...(callPluginConfig(event).runContext ?? {}) };
+            return beforePromptBuildDecision(event, contextOptions);
+          },
+          { priority: options.contextPriority ?? 85, timeoutMs: options.contextTimeoutMs ?? 5_000 },
+        );
+      }
+
+      if (runtimeCoverageEnforced) {
+        api.on(
+          "before_agent_run",
+          async (event, ctx) => {
+            const coverageOptions = { ...baseRuntimeCoverage, ...(callPluginConfig(event).runtimeCoverage ?? {}) };
+            return beforeAgentRunDecision(event, ctx, coverageOptions);
+          },
+          { priority: options.runPriority ?? 90, timeoutMs: options.runTimeoutMs ?? 5_000 },
+        );
+      }
 
       api.on(
         "before_tool_call",
         async (event) => {
-          const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
+          const callConfig = callPluginConfig(event);
           const callConfigTimeout = normalizeNumber(callConfig.approvalTimeoutMs, undefined);
           const timeoutMs = [callConfigTimeout, pluginConfigTimeout, baseToolPolicy.timeoutMs].find((value) =>
             Number.isFinite(value),
@@ -695,9 +900,9 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
       );
 
       // Register the finalize gate when an external audit is wired OR built-in
-      // reflection is explicitly enabled (off by default). The handler composes them: a
-      // real audit revise outranks reflection, and the two use distinct idempotency keys
-      // so the host never double-revises.
+      // reflection is enabled (the default). The handler composes them: a real audit
+      // revise outranks reflection, and the two use distinct idempotency keys so the
+      // host never double-revises.
       if (typeof options.loadCompletionAudit === "function" || reflectionEnabled) {
         api.on(
           "before_agent_finalize",
@@ -709,8 +914,7 @@ export function createNextRightThingPlugin(definePluginEntry, options = {}) {
                 return auditDecision;
               }
             }
-            const callConfig = event?.context?.pluginConfig ?? event?.config ?? {};
-            const reflectionOptions = { ...baseReflection, ...(callConfig.reflection ?? {}) };
+            const reflectionOptions = { ...baseReflection, ...(callPluginConfig(event).reflection ?? {}) };
             return reflectiveFinalizeDecision(event, reflectionOptions);
           },
           { priority: options.finalizePriority ?? 50, timeoutMs: options.finalizeTimeoutMs ?? 5_000 },

@@ -6,22 +6,6 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-### Changed (refocus on the original two-hook goal)
-
-A "rethink" review found the project had drifted from its original purpose — a reactive guardrail
-(approval gate + completion check) that wraps prepared turns and never drives the agent. This pass
-steers back without removing working code:
-
-- **Built-in finalize reflection now defaults to OFF (opt-in).** `reflection.enabled` defaults to
-  `false` across all four configSchemas and the runtime. A plain install registers only the
-  `before_tool_call` approval gate and therefore needs **no `allowConversationAccess` grant** — the
-  gate works out of the box. Reflection is reframed as the no-runtime fallback for `loadCompletionAudit`:
-  turn it on with `reflection.enabled: true` (or wire an audit) when you want the finalize check. The
-  one-shot mechanics, idempotency keys, and audit-outranks-reflection composition are unchanged.
-- **Docs reframed to "two reactive guardrails, never drives."** README leads with the two hooks and
-  marks the `heartbeat/` companion as a *separate* autonomous driver (not part of the plugin runtime),
-  intended for extraction into its own `next-right-thing-heartbeat` package.
-
 ### Fixed (effect-inference completeness — found by the E2E adversarial workflow)
 
 Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced through the
@@ -41,6 +25,29 @@ Two gate bypasses surfaced by the end-to-end adversarial test, both reproduced t
 
 ### Added
 
+- **Fail-closed runtime coverage gate.** The default plugin entry now registers
+  `before_agent_run` and blocks known uncovered runtime paths such as
+  `claude-cli`/`anthropic-cli`, plus unidentified runtime paths, before
+  inference. `runtimeCoverage` config can tune or explicitly disable the layer
+  when another runtime relay provides equivalent coverage.
+- **Runtime smoke guidance.** Documentation and the verifier now warn that
+  `openclaw agent --json` results with `meta.fallbackFrom: "gateway"` are not
+  valid hook-coverage evidence; restart the Gateway or force `--local` before
+  trusting the smoke.
+- **Native hook relay verification.** The install verifier now requires
+  gateway-hosted exec routing (`tools.exec.host="gateway"`), `strictInlineEval`,
+  and the `openclaw hooks relay` command by default, so Codex app-server native
+  shell calls can reach OpenClaw's `before_tool_call` policy instead of running
+  under a local/native bypass.
+- **Model-agnostic NRT run context.** The default entry now registers
+  `before_prompt_build` to inject the Next Right Thing operating context for any
+  model that reaches OpenClaw's hook runner. `before_agent_run` remains the
+  preflight, but no longer blocks Claude CLI or unidentified runtimes by default;
+  strict runtime/provider blocking is opt-in through `runtimeCoverage`.
+- **Single-file delete gating.** The tool-call classifier now treats single-file
+  deletion primitives (`rm file`, `rm -f file`, `Remove-Item`, `del`, `erase`,
+  `unlink`) as `delete_data`, and accepts Codex/OpenClaw bridge event shapes that
+  use `name`/`input` or `arguments` instead of `toolName`/`params`.
 - **End-to-end test (`heartbeat/e2e.test.mjs`).** Drives the whole chain the way OpenClaw does, in one
   process: composes a layered prompt from seeded state and dispatches it over a real loopback HTTP POST to
   a stub gateway hooks endpoint, then exercises the plugin's **registered** hook lifecycle

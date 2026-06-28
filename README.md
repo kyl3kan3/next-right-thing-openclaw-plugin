@@ -1,16 +1,11 @@
 # Next Right Thing OpenClaw Plugin
 
-A single, dependency-free OpenClaw hook plugin with **two reactive guardrails**:
+OpenClaw hook plugin for the Next Right Thing protocol.
 
-1. **`before_tool_call` — an approval gate** that pauses for human approval before risky or
-   irreversible actions (destructive shell, destructive SQL, production deploys, secret exposure)
-   and blocks calls that do not move the active goal forward.
-2. **`before_agent_finalize` — a completion check** that won't let the agent claim "done" without
-   proven evidence (via a wired `loadCompletionAudit`, with an optional built-in reflection fallback).
-
-It **wraps prepared turns and never drives the agent** — it restrains, it does not push. (For an
-optional autonomous *driver*, see the separate [`heartbeat/`](#autonomous-operation-separate-companion)
-companion below — it is deliberately not part of the plugin's hook runtime.)
+It adds a model-agnostic Next Right Thing run context, approval gates around
+risky tool calls, a runtime coverage preflight, and a completion-audit hook
+surface for agents that should keep moving while preserving evidence,
+verification, and safety.
 
 ## Install
 
@@ -24,13 +19,23 @@ openclaw plugins inspect next-right-thing --runtime --json
 > Installs the current stable release. To test unreleased changes instead, replace
 > the tag with `@main`.
 
-The approval gate works out of the box — **no extra permission grant required**. A plain install
-registers only `before_tool_call`, so there is nothing to enable.
+### Required: grant hook permissions (one line)
 
-> **Only if you opt into the finalize check** (`reflection.enabled: true`, or a wired
-> `loadCompletionAudit`): OpenClaw gates `before_agent_finalize` behind an operator-granted
-> permission, so add `hooks.allowConversationAccess: true` once. Skip this for a gate-only install.
-> See [Configuration](#configuration).
+The model-agnostic run context uses `before_prompt_build`; runtime coverage and
+reflective deliberation use `before_agent_run` and `before_agent_finalize`.
+OpenClaw gates those surfaces behind operator-granted permissions. They cannot
+be auto-enabled by the plugin -- add this once to your OpenClaw config so the
+NRT layer actually fires across models:
+
+```json
+{ "plugins": { "entries": { "next-right-thing": {
+  "hooks": { "allowPromptInjection": true, "allowConversationAccess": true }
+} } } }
+```
+
+Without it OpenClaw-owned tool-call approval still works, but the run context,
+runtime coverage, and reflection stay off. See [Configuration](#configuration)
+for the full options.
 
 ## Smoke Test
 
@@ -41,28 +46,55 @@ curl -fsSL -o /tmp/verify-openclaw-install.sh https://raw.githubusercontent.com/
 bash /tmp/verify-openclaw-install.sh
 ```
 
-### Required for Claude CLI/native shell safety
+For CLI-level smoke tests, use a healthy Gateway or force the embedded local
+runner with `openclaw agent --local --json ...`. If a JSON result reports
+`meta.fallbackFrom: "gateway"`, the Gateway request failed and OpenClaw used an
+automatic fallback path; restart the Gateway and rerun before treating the smoke
+as evidence of hook coverage.
 
-`before_tool_call` wraps OpenClaw-owned dynamic tools. On OpenClaw setups where
-an external runtime owns native shell execution, such as Claude CLI, shell
-commands are governed by OpenClaw's native exec policy. Do not leave that policy
-in YOLO mode (`security=full`, `ask=off`) if you expect destructive shell
-commands to be blocked.
+### Runtime and native shell safety
+
+`before_prompt_build` injects the Next Right Thing operating context for any
+model that reaches OpenClaw's hook runner. `before_agent_run` is the preflight
+that proves the plugin layer was invoked before inference; by default it is
+model-agnostic and does **not** block Claude CLI, Anthropic, OpenAI, or
+unidentified runtimes merely because of their model/provider id.
+
+`before_tool_call` then wraps OpenClaw-owned dynamic tools that reach the hook
+surface. If you need strict host-level tool coverage, configure
+`runtimeCoverage.blockedRuntimeIds`, `runtimeCoverage.blockedProviderIds`, or
+`runtimeCoverage.allowUnidentifiedRuntime: false` to block specific uncovered
+paths before inference.
+
+For host runtimes that own native shell execution, route exec through the
+OpenClaw gateway and keep the native exec policy out of YOLO mode
+(`security=full`, `ask=off`). On OpenClaw 2026.6.10 the Codex app-server harness
+can bridge native `PreToolUse` / `PostToolUse` / `Stop` callbacks into OpenClaw
+with `openclaw hooks relay`; that relay is what lets native shell calls reach
+the same `before_tool_call` policy used by OpenClaw-owned dynamic tools. If exec
+is left on a local/native host or YOLO policy, destructive shell commands can
+execute without this plugin's approval prompt.
 
 Recommended baseline:
 
 ```bash
 openclaw config patch --stdin <<'JSON'
-{"tools":{"exec":{"security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
+{"tools":{"exec":{"host":"gateway","security":"allowlist","ask":"on-miss","strictInlineEval":true}}}
 JSON
 openclaw gateway restart
 ```
 
 If your agents have `agents.list[].tools.exec` overrides, set those overrides to
-the same `security=allowlist`, `ask=on-miss`, and `strictInlineEval=true` values.
-The verification script fails by default when it sees `security=full` plus
-`ask=off`; set `REQUIRE_SAFE_EXEC_POLICY=0` only when you intentionally want to
-test hook registration without hardening native exec.
+the same `host=gateway`, `security=allowlist`, `ask=on-miss`, and
+`strictInlineEval=true` values.
+The verification script fails by default unless runtime inspect shows the
+`before_prompt_build` run-context hook, the `before_agent_run` coverage gate,
+and the `before_tool_call` approval gate. It also fails when it sees
+`security=full` plus `ask=off`, when `tools.exec.host` is not `gateway`, when
+`strictInlineEval` is not enabled, or when `openclaw hooks relay` is unavailable.
+Set `REQUIRE_SAFE_EXEC_POLICY=0`, `REQUIRE_GATEWAY_EXEC_HOST=0`, or
+`REQUIRE_NATIVE_HOOK_RELAY=0` only when you intentionally want to test hook
+registration without hardening native exec.
 
 Ask OpenClaw to run a safe command first:
 
@@ -76,9 +108,10 @@ Then test a gated action:
 Run: vercel deploy --prod
 ```
 
-Expected result: OpenClaw-owned tools ask for a next-right-thing approval instead
-of executing directly. Claude CLI/native shell commands should be blocked or
-sent through OpenClaw's native exec approval policy unless explicitly approved.
+Expected result: the model receives the Next Right Thing run context, and
+OpenClaw-owned tools ask for a next-right-thing approval instead of executing
+directly. If strict `runtimeCoverage` blocking is configured, matching runtime
+or provider ids are blocked before inference.
 
 ## Configuration
 
@@ -87,54 +120,64 @@ Config knobs are set under the plugin's entry in your OpenClaw config:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `approvalTimeoutMs` | integer (ms) | `60000` | How long to wait for an approval decision before denying. Times out to **deny** (fail-safe). |
-| `reflection.enabled` | boolean | `false` | **Opt-in.** Turns on the built-in reflective deliberation (below) — the no-runtime fallback for `loadCompletionAudit`. |
+| `runContext.enabled` | boolean | `true` | Inject the model-agnostic Next Right Thing operating context with `before_prompt_build`. |
+| `runContext.instruction` | string | built-in NRT context | Optional replacement for the default run-context instruction. |
+| `runtimeCoverage.enforce` | boolean | `true` | Register the `before_agent_run` preflight. |
+| `runtimeCoverage.allowUnidentifiedRuntime` | boolean | `true` | Allow runs when OpenClaw provides no runtime/provider/model identity. Set `false` only for strict host coverage. |
+| `runtimeCoverage.blockedRuntimeIds` | string[] | `[]` | Optional runtime ids to block before inference when strict tool coverage is required. |
+| `runtimeCoverage.blockedProviderIds` | string[] | `[]` | Optional provider ids to block before inference when strict tool coverage is required. |
+| `runtimeCoverage.message` | string | built-in block text | Operator-facing block message for strict runtime-coverage blocks. |
+| `reflection.enabled` | boolean | `true` | Master switch for the built-in reflective deliberation (below). |
 | `reflection.reviewRoles` | string[] | `[]` | Extra review lenses to include — any of `critic`, `verifier`, `security`, `fact_checker`, `memory_curator`. |
 | `reflection.maxAttempts` | integer ≥ 1 | `1` | How many times to ask the model to reflect before letting it finalize. |
 
-A gate-only install needs no `config` block at all. To opt into the finalize reflection:
-
 ```json
 { "plugins": { "entries": { "next-right-thing": {
-  "hooks": { "allowConversationAccess": true },
+  "hooks": { "allowPromptInjection": true, "allowConversationAccess": true },
   "config": {
     "approvalTimeoutMs": 60000,
+    "runContext": { "enabled": true },
+    "runtimeCoverage": { "enforce": true, "allowUnidentifiedRuntime": true },
     "reflection": { "enabled": true, "reviewRoles": ["security"] }
   }
 } } } }
 ```
 
-> **`hooks.allowConversationAccess` is required only when the finalize check is active**
-> (`reflection.enabled: true` or a wired `loadCompletionAudit`). OpenClaw gates
-> `before_agent_finalize` behind that conversation-access permission. A gate-only install never
-> registers that hook, so it needs no grant. See OpenClaw's
-> [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
+> **Required for model-wide NRT context, runtime coverage, and finalize
+> reflection.** OpenClaw gates `before_prompt_build` behind
+> `allowPromptInjection`, and `before_agent_run` / `before_agent_finalize`
+> behind `allowConversationAccess`, so a non-bundled plugin must set both hook
+> permissions on its entry (alongside `config`). Without them OpenClaw-owned
+> tool-call approval still works, but the model-wide run context, run gate, and
+> reflection hook never run. See
+> OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
 
-## Completion check & reflective deliberation (opt-in)
+## Reflective Deliberation
 
-The second guardrail keeps the agent from claiming "done" prematurely. There are two ways to wire it,
-and **both are off until you turn them on**:
+By default — with **no** external runtime — the plugin makes the agent *contemplate
+before it finalizes*. On the agent's first attempt to declare it is done, the
+`before_agent_finalize` hook returns one `revise` that asks the model to:
 
-- **Evidence audit (preferred):** wire a `loadCompletionAudit` callback (see `plugin-entry.example.ts`).
-  On finalize it inspects your real completion evidence and returns a `revise` listing what is unproven.
-- **Built-in reflection (no-runtime fallback):** set `reflection.enabled: true`. On the agent's first
-  finalize attempt the `before_agent_finalize` hook returns one `revise` asking the model to (1) restate
-  the active goal, (2) state the concrete evidence it is done, (3) if not, name the **next right thing**
-  and do it, and (4) self-review through the configured lenses (`critic`, `verifier`, …).
+1. restate the active goal in one sentence,
+2. state the concrete evidence that it is actually done,
+3. if it is not fully done, name at least one **next right thing** and do it, and
+4. self-review through the configured review lenses (`critic`, `verifier`, …).
 
-The reflection is a **one-shot** (`reflection.maxAttempts: 1` with a stable idempotency key) — it asks
-once, then lets finalize proceed, never an infinite loop. Whether the finalize hook is registered at all
-is a startup decision (audit wired, or `reflection.enabled: true`), so a per-call override can disable or
-tune it but cannot resurrect it when off. When both are wired, the evidence audit `revise` outranks the
-built-in reflection; they use distinct idempotency keys and never double-revise.
+It is a **one-shot** (`reflection.maxAttempts: 1` with a stable idempotency key), so it
+asks once and then lets finalize proceed — never an infinite loop. Set
+`reflection.enabled: false` (statically or at the plugin level) to turn it off; that is a
+startup decision, so a per-call `event.context.pluginConfig` override can disable or tune
+reflection for a turn but cannot re-enable it when it is globally off. If you also wire a `loadCompletionAudit`
+callback (see `plugin-entry.example.ts`), an evidence-based audit `revise` takes
+precedence over the built-in reflection; the two use distinct idempotency keys.
 
-## Autonomous operation (separate companion)
+## Autonomous operation (optional)
 
-This plugin is a **reactive guardrail** — it wraps prepared turns and never drives the agent. If you also
-want something that *drives* an agent to keep acting on its own, that is a **different tool**: the optional
-[`heartbeat/`](heartbeat/README.md) companion in this repo is a standalone gateway client (not a hook, not
-part of the plugin runtime) that periodically prompts your gateway from a layered goal model, with this
-plugin gating risk on every turn it triggers. It ships idle and dry-run by default and is intended to be
-extracted into its own package. See [`heartbeat/README.md`](heartbeat/README.md).
+The plugin keeps each turn honest but does not *drive* the agent — OpenClaw acts only when
+prompted. For an agent that **keeps doing the next right thing on its own**, the optional
+[`heartbeat/`](heartbeat/README.md) companion periodically prompts your gateway from a layered
+goal model (mission + backlog + recent context), with this plugin gating risk on every turn it
+triggers. It ships idle and dry-run by default. See [`heartbeat/README.md`](heartbeat/README.md).
 
 ## Tests
 
