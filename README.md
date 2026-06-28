@@ -164,10 +164,12 @@ A gate-only install needs no `config` block at all. Below is an "everything opte
 ```
 
 > **Permissions are needed only for the layers you enable.** OpenClaw gates
-> `before_prompt_build` behind `allowPromptInjection` (`runContext.enabled`), and both
-> `before_agent_finalize` (`reflection.enabled`) and `before_agent_run`
-> (`runtimeCoverage.enforce`) behind `allowConversationAccess`. Add only the
-> grant(s) for what you turn on; a gate-only install needs none. See
+> `before_prompt_build` behind `allowPromptInjection` (`runContext.enabled`), and
+> `before_agent_run` (`runtimeCoverage.enforce`) plus `before_agent_finalize` behind
+> `allowConversationAccess`. The finalize hook registers when **either** `reflection.enabled`
+> is set **or** a `loadCompletionAudit` loader is wired — so the preferred evidence-audit
+> path needs `allowConversationAccess` too. Add only the grant(s) for what you turn on; a
+> gate-only install needs none. See
 > OpenClaw's [plugin permission docs](https://docs.openclaw.ai/plugins/plugin-permission-requests).
 
 ## Completion check & reflective deliberation (opt-in)
