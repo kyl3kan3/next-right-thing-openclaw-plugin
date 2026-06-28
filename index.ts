@@ -20,8 +20,9 @@ export default createNextRightThingPlugin(definePluginEntry, {
         properties: {
           enabled: {
             type: "boolean",
-            default: true,
-            description: "Enable the built-in reflective deliberation on finalize (default true).",
+            default: false,
+            description:
+              "Opt in to built-in reflective deliberation on finalize (default false; the no-runtime fallback for loadCompletionAudit). Requires hooks.allowConversationAccess.",
           },
           reviewRoles: {
             type: "array",
@@ -45,8 +46,9 @@ export default createNextRightThingPlugin(definePluginEntry, {
         properties: {
           enabled: {
             type: "boolean",
-            default: true,
-            description: "Inject the Next Right Thing operating context into every model run.",
+            default: false,
+            description:
+              "Opt in to injecting the Next Right Thing operating context into every model run via before_prompt_build (default false). Requires hooks.allowPromptInjection.",
           },
           instruction: {
             type: "string",
@@ -60,8 +62,9 @@ export default createNextRightThingPlugin(definePluginEntry, {
         properties: {
           enforce: {
             type: "boolean",
-            default: true,
-            description: "Run the before_agent_run coverage check before model inference.",
+            default: false,
+            description:
+              "Opt in to the before_agent_run runtime-coverage preflight before model inference (default false; strict-coverage layer). Requires hooks.allowConversationAccess.",
           },
           allowUnidentifiedRuntime: {
             type: "boolean",

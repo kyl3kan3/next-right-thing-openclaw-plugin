@@ -62,28 +62,24 @@ if ! grep -q '"status": "loaded"' "$inspect_file"; then
   printf 'runtime inspect output did not show status: loaded\n' >&2
   exit 11
 fi
-if ! grep -q '"before_prompt_build"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_prompt_build hook; set plugins.entries.%s.hooks.allowPromptInjection=true for the model-wide NRT context\n' "$PLUGIN_ID" >&2
-  exit 12
-fi
-if ! grep -q '"before_agent_run"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_agent_run hook; set plugins.entries.%s.hooks.allowConversationAccess=true for the runtime coverage gate\n' "$PLUGIN_ID" >&2
-  exit 13
-fi
+# The approval gate is the always-on core and is the only REQUIRED hook.
 if ! grep -q '"before_tool_call"' "$inspect_file"; then
-  printf 'runtime inspect output did not show before_tool_call hook\n' >&2
+  printf 'runtime inspect output did not show the before_tool_call approval gate\n' >&2
   exit 14
 fi
-if grep -q 'allowPromptInjection=true\|allowConversationAccess=true' "$inspect_file"; then
-  cat <<'EOF'
-
-Note:
-The plugin is loaded, but OpenClaw reports that hook permissions are missing.
-Set plugins.entries.next-right-thing.hooks.allowPromptInjection=true for the
-model-wide NRT context and allowConversationAccess=true for runtime coverage and
-finalize reflection.
-EOF
-fi
+# The three optional layers are opt-in (default off); report which are active.
+for hook_cfg in \
+  'before_prompt_build:runContext.enabled / allowPromptInjection' \
+  'before_agent_run:runtimeCoverage.enforce + allowConversationAccess' \
+  'before_agent_finalize:reflection.enabled / allowConversationAccess'; do
+  hook_name="${hook_cfg%%:*}"
+  hook_knob="${hook_cfg#*:}"
+  if grep -q "\"${hook_name}\"" "$inspect_file"; then
+    printf 'optional hook active: %s\n' "$hook_name"
+  else
+    printf 'optional hook off (enable via %s): %s\n' "$hook_knob" "$hook_name"
+  fi
+done
 
 log "Inspect OpenClaw exec policy"
 if openclaw approvals get >"$policy_file" 2>&1; then
@@ -94,11 +90,11 @@ if openclaw approvals get >"$policy_file" 2>&1; then
 Unsafe exec policy detected:
 At least one OpenClaw exec policy still shows security=full and ask=off.
 
-The next-right-thing before_prompt_build hook carries NRT context across models,
-before_agent_run proves the layer was invoked before inference, and
-before_tool_call covers OpenClaw-owned dynamic tools. Claude CLI/native shell
-execution can still be governed by OpenClaw's native exec policy, so YOLO exec
-mode can bypass this plugin's tool approval prompt.
+The next-right-thing before_tool_call approval gate covers OpenClaw-owned dynamic
+tools (and the optional before_prompt_build / before_agent_run layers carry NRT
+context and coverage when enabled). Claude CLI/native shell execution can still be
+governed by OpenClaw's native exec policy, so YOLO exec mode can bypass this
+plugin's tool approval prompt.
 
 Recommended hardening:
   openclaw config patch --stdin <<'JSON'
@@ -197,13 +193,14 @@ Gated:
 Run: vercel deploy --prod
 
 Expected result:
-Any model that reaches OpenClaw's hook runner should receive the Next Right
-Thing run context. OpenClaw-owned tools should show a next-right-thing approval
-prompt instead of executing directly. Codex app-server native shell tools must
-also be gateway-routed (`tools.exec.host="gateway"`) so their native hooks can
-call `openclaw hooks relay` and reach the same pre-tool policy. Runtime/provider
-ids are blocked before inference only when strict runtimeCoverage blocking is
-explicitly configured.
+OpenClaw-owned tools should show a next-right-thing approval prompt instead of
+executing directly (the always-on approval gate). If runContext.enabled is set,
+any model reaching OpenClaw's hook runner also receives the Next Right Thing run
+context. Codex app-server native shell tools must also be gateway-routed
+(`tools.exec.host="gateway"`) so their native hooks can call `openclaw hooks
+relay` and reach the same pre-tool policy. Runtime/provider ids are blocked
+before inference only when strict runtimeCoverage blocking is explicitly
+configured.
 
 For CLI JSON smoke tests, use a healthy Gateway or force the embedded local
 runner with `openclaw agent --local --json ...`. If the result reports

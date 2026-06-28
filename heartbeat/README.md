@@ -1,11 +1,18 @@
-# Next-Right-Thing Heartbeat (optional companion)
+# Next-Right-Thing Heartbeat (optional companion — a separate tool)
+
+> **This is NOT part of the plugin.** The `next-right-thing` plugin is a *reactive guardrail*
+> that restrains the agent; this heartbeat is an *autonomous driver* that pushes it. They are
+> opposite kinds of thing and share no runtime — the heartbeat is a standalone gateway client,
+> not a hook. It lives here for now but is intended to be extracted into its own package
+> (`next-right-thing-heartbeat`) that depends on the plugin. If you only want the safety gate,
+> ignore this directory entirely.
 
 The `next-right-thing` **plugin** keeps each agent turn honest, but OpenClaw is
-request-driven — it only acts when prompted. This **heartbeat** is the missing
+request-driven — it only acts when prompted. This **heartbeat** is an optional
 "continuation engine": a tiny, dependency-free runner that periodically asks your
 gateway *"what's the next right thing right now? do it,"* so the agent keeps making
-progress with no human in the loop. The plugin then gates risk and runs the finalize
-reflection on every turn it triggers.
+progress with no human in the loop. The plugin then gates risk on every turn it
+triggers (and runs the finalize reflection if you opted into it).
 
 It is a **client of the gateway**, separate from the plugin's hook runtime. No npm
 deps; runs with plain `node`.
