@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Red-team benchmark (`bench/`).** A reproducible, dependency-free corpus of
+  35 malicious tool calls (destructive shell/SQL, raw-disk wipes, pipe-to-shell,
+  argv-split and nested payloads, production deploys, publishing, messaging,
+  billing, secret exposure) that must be gated and 22 benign calls that must not —
+  driven through the production `beforeToolCallDecision` entry point. `npm run bench`
+  prints the measured catch-rate (100%, 35/35) and false-positive-rate (0%, 22/22);
+  `bench/bench.test.mjs` enforces both thresholds in CI so the gate cannot silently
+  regress. Secret-shaped fixtures are assembled from fragments so no scannable
+  credential is committed.
+- **Gate hardening — pipe-to-shell execution.** Effect inference now flags a new
+  `execute_remote_code` HARD/critical effect for the classic opaque-code shapes the
+  red-team benchmark surfaced: `curl … | sh`, `wget … | bash`, `sh <(curl …)`, and
+  decode-then-execute (`base64 -d | sh`). Piping fetched or decoded content into a
+  shell runs code the gate can't inspect, so the pipe itself is now gated. Anchored
+  to the pipe so a shell name appearing only as an argument (`… | ssh host`) or as
+  text does not false-fire.
+
 ### Changed (scope realignment — opt-in defaults)
 
 The three turn-shaping/auditing layers added since the v0.2.x scaffold now ship
