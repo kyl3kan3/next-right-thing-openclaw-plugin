@@ -190,10 +190,23 @@ const SQL_EFFECT_PATTERNS = [
 // what the piped payload does, so the pipe-into-a-shell itself is the risk to surface.
 // Anchored to the pipe so a shell name merely appearing as an argument does not fire.
 const REMOTE_EXEC_PATTERNS = [
-  // `curl … | sh`, `wget … | bash`, `fetch … | zsh`, optionally via sudo.
+  // `curl … | sh`, `wget … | bash`, `fetch … | zsh`, optionally via sudo. Piping
+  // anything into a shell always executes it, so the pipe-into-a-shell is the risk.
   /\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish)\b/i,
-  // Process-substitution form: `bash <(curl …)`, `sh <(wget …)`.
+  // Process-substitution into a shell: `bash <(curl …)`, `sh <(wget …)`.
   /\b(?:sh|bash|zsh|dash|ksh|fish)\s+<\(/i,
+  // A network fetch piped into a *bare* language interpreter, where stdin becomes the
+  // program: `curl … | python`, `wget … | node`. Requires the interpreter to be
+  // terminal (end of command, or followed only by a bare `-`) so that piping fetched
+  // *data* into a tool — `curl … | python -m json.tool`, `… | node app.js` — is left
+  // alone and the false-positive rate stays at zero.
+  /\b(?:curl|wget|fetch)\b[\s\S]*\|\s*(?:sudo\s+)?(?:python[0-9.]*|node|deno|bun|perl|ruby|php|Rscript)\s*(?:$|[|;&]|-\s|-$)/i,
+  // A shell `-c` that runs a command-substitution which fetches: `bash -c "$(curl …)"`.
+  /\b(?:sh|bash|zsh|dash|ksh)\b[\s\S]*\s-c\b[\s\S]*\$\([\s\S]*\b(?:curl|wget|fetch)\b/i,
+  // eval / source / `.` of a substitution that fetches — fetched content run as code:
+  // `eval "$(curl …)"`, `source <(curl …)`, `. <(wget …)`.
+  /\beval\b[\s\S]*\$\([\s\S]*\b(?:curl|wget|fetch)\b/i,
+  /(?:^|[\s;&|])(?:source\s+|\.\s+)<\([\s\S]*\b(?:curl|wget|fetch)\b/i,
   // Decode-then-execute: `base64 -d | sh`, `openssl … | bash` (payload is hidden).
   /\bbase64\b[\s\S]*\s-{1,2}d\w*\b[\s\S]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish)\b/i,
 ];
