@@ -23,6 +23,7 @@ export const HARD_EFFECTS = new Set([
   "delete_data",
   "overwrite_data",
   "rotate_credentials",
+  "execute_remote_code",
   "mutate_production",
   "change_auth",
   "change_billing",
@@ -44,6 +45,7 @@ const HIGH_SEVERITY_EFFECTS = new Set([
   "mutate_production",
   "change_auth",
   "change_permissions",
+  "execute_remote_code",
 ]);
 
 export const EXEC_TOOL_NAMES = new Set([
@@ -181,6 +183,19 @@ const SQL_EFFECT_PATTERNS = [
   [/\bGRANT\b[\s\S]*\b(?:ON|TO)\b/i, "change_permissions"],
   [/\bREVOKE\b[\s\S]*\b(?:ON|FROM)\b/i, "change_permissions"],
   [/\b(?:CREATE|DROP|ALTER)\s+(?:ROLE|USER|GROUP)\b/i, "change_auth"],
+];
+
+// Piping fetched or decoded content straight into a shell interpreter runs opaque,
+// unreviewed code (the classic `curl … | sh` supply-chain shape). The gate cannot see
+// what the piped payload does, so the pipe-into-a-shell itself is the risk to surface.
+// Anchored to the pipe so a shell name merely appearing as an argument does not fire.
+const REMOTE_EXEC_PATTERNS = [
+  // `curl … | sh`, `wget … | bash`, `fetch … | zsh`, optionally via sudo.
+  /\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish)\b/i,
+  // Process-substitution form: `bash <(curl …)`, `sh <(wget …)`.
+  /\b(?:sh|bash|zsh|dash|ksh|fish)\s+<\(/i,
+  // Decode-then-execute: `base64 -d | sh`, `openssl … | bash` (payload is hidden).
+  /\bbase64\b[\s\S]*\s-{1,2}d\w*\b[\s\S]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish)\b/i,
 ];
 
 const PUBLISH_PATTERNS = [
@@ -552,6 +567,9 @@ export function inferEffectsFromToolCall(event) {
     }
     if (anyPattern(DESTRUCTIVE_PATTERNS, execText)) {
       effects.add("delete_data");
+    }
+    if (anyPattern(REMOTE_EXEC_PATTERNS, execText)) {
+      effects.add("execute_remote_code");
     }
     if (anyPattern(PUBLISH_PATTERNS, execText)) {
       effects.add("publish");

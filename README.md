@@ -192,7 +192,7 @@ This plugin is intentionally narrow — host policy that wraps prepared turns.
 ## Red-team coverage
 
 The gate ships with a reproducible red-team benchmark (`bench/`) — a labelled corpus of
-**32 malicious** tool calls that must be gated and **20 benign** calls that must not — run
+**35 malicious** tool calls that must be gated and **22 benign** calls that must not — run
 through the exact `beforeToolCallDecision` entry point used in production:
 
 ```bash
@@ -203,8 +203,8 @@ Current, measured result:
 
 | Metric | Result | Meaning |
 | --- | :---: | --- |
-| **Catch-rate** | **100%** (32/32) | every risky call — destructive shell/SQL, raw-disk wipes, argv-split & nested payloads, production deploys, publishing, messaging, billing, secret exposure — is blocked or sent for approval. |
-| **False-positive-rate** | **0%** (20/20) | ordinary safe work — reads, `SELECT`, `npm test`, SQL keywords appearing only as *text* — passes untouched, so the gate never cries wolf. |
+| **Catch-rate** | **100%** (35/35) | every risky call — destructive shell/SQL, raw-disk wipes, pipe-to-shell (`curl … \| sh`), argv-split & nested payloads, production deploys, publishing, messaging, billing, secret exposure — is blocked or sent for approval. |
+| **False-positive-rate** | **0%** (22/22) | ordinary safe work — reads, `SELECT`, `npm test`, a `\| ssh` pipe, SQL/shell keywords appearing only as *text* — passes untouched, so the gate never cries wolf. |
 
 These thresholds are enforced in CI (`bench/bench.test.mjs`), so a change that lets a risky
 call slip through — or starts gating safe work — fails the build. Extend the corpus in
