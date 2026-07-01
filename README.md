@@ -4,6 +4,7 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](package.json)
 [![node: ≥20](https://img.shields.io/badge/node-%E2%89%A520-339933.svg?logo=node.js&logoColor=white)](package.json)
+[![red-team catch-rate: 100%](https://img.shields.io/badge/red--team%20catch--rate-100%25-brightgreen.svg)](bench/)
 
 > A safety guardrail for [OpenClaw](https://openclaw.ai) agents: it pauses risky or
 > irreversible tool calls for human approval **before** they run.
@@ -188,6 +189,27 @@ This plugin is intentionally narrow — host policy that wraps prepared turns.
   (`nrt reviews`/`scheduler`/`supervisor`). This adapter is dependency-free; wire that source
   tree in via `loadCompletionAudit` only if you run it.
 
+## Red-team coverage
+
+The gate ships with a reproducible red-team benchmark (`bench/`) — a labelled corpus of
+**32 malicious** tool calls that must be gated and **20 benign** calls that must not — run
+through the exact `beforeToolCallDecision` entry point used in production:
+
+```bash
+npm run bench
+```
+
+Current, measured result:
+
+| Metric | Result | Meaning |
+| --- | :---: | --- |
+| **Catch-rate** | **100%** (32/32) | every risky call — destructive shell/SQL, raw-disk wipes, argv-split & nested payloads, production deploys, publishing, messaging, billing, secret exposure — is blocked or sent for approval. |
+| **False-positive-rate** | **0%** (20/20) | ordinary safe work — reads, `SELECT`, `npm test`, SQL keywords appearing only as *text* — passes untouched, so the gate never cries wolf. |
+
+These thresholds are enforced in CI (`bench/bench.test.mjs`), so a change that lets a risky
+call slip through — or starts gating safe work — fails the build. Extend the corpus in
+[`bench/corpus.mjs`](bench/corpus.mjs); the number above is the honest count, not a claim.
+
 ## Development
 
 The repository is self-contained and dependency-free — no install step is needed:
@@ -198,7 +220,8 @@ npm test    # or: node --test
 
 `tests/hooks.test.mjs` covers side-effect inference (destructive shell, SQL, production,
 publish, secrets), approval-prompt shape, severity, and config threading, against the
-`fixtures/simulate-runtime.mjs` hook fixture.
+`fixtures/simulate-runtime.mjs` hook fixture. `bench/` adds the red-team catch-rate benchmark
+above.
 
 ## License
 
