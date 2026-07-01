@@ -29,6 +29,24 @@ All notable changes to this project are documented here. The format is based on
   (`curl … | python -m json.tool`, `… | node app.js`, `… | jq`), a `| ssh` pipe, or a
   shell name appearing only as text does **not** false-fire — the corpus locks this in
   with dedicated benign guards.
+- **Gate hardening — closed the disclosed blind spots.** The three evasions previously
+  listed under `KNOWN_EVASIONS` are now gated, each with a low-false-positive signature:
+  - **in-language fetch+exec** → `execute_remote_code`: an interpreter running inline
+    code (`-c`/`-e`/`-r`) that *both* fetches (`urlopen`, `requests.get`, `require('https')`,
+    …) *and* executes (`exec`, `eval`, `child_process`, `os.system`, …) — the in-language
+    analogue of `curl … | sh`. Fetch-without-exec (`python -c "print(requests.get(u))"`)
+    and exec-without-fetch (`python -c "exec(open('setup.py'))"`) stay allowed.
+  - **dangerous permission changes** → `change_permissions` (HARD/critical): a recursive
+    `chmod` to a world-writable mode (`777`/`666`/`a+w`), or a recursive `chmod`/`chown`
+    reaching a sensitive system path (`/etc`, `/usr`, `/`, …). Routine `chmod -R 755 ./dist`,
+    `chmod +x`, and `chown -R $USER ./project` stay allowed.
+  - **fork bombs** → a new `exhaust_resources` HARD/critical effect: the classic
+    `:(){ :|:& };:` and named `f(){ f|f& };f` self-forking signature.
+
+  Newly disclosed (verified `ALLOWED`) blind spots that remain: obfuscated *local* exec
+  with no fetch (`exec(base64.b64decode(…))`), interpreters outside the covered set
+  (`lua -e`, `tclsh`), and fetches via an unenumerated primitive (`httpx`, raw sockets).
+  Corpus grows to 48 malicious / 31 benign.
 
 ### Changed (scope realignment — opt-in defaults)
 

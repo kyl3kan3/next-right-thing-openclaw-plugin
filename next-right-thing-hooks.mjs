@@ -24,6 +24,7 @@ export const HARD_EFFECTS = new Set([
   "overwrite_data",
   "rotate_credentials",
   "execute_remote_code",
+  "exhaust_resources",
   "mutate_production",
   "change_auth",
   "change_billing",
@@ -46,6 +47,7 @@ const HIGH_SEVERITY_EFFECTS = new Set([
   "change_auth",
   "change_permissions",
   "execute_remote_code",
+  "exhaust_resources",
 ]);
 
 export const EXEC_TOOL_NAMES = new Set([
@@ -209,6 +211,42 @@ const REMOTE_EXEC_PATTERNS = [
   /(?:^|[\s;&|])(?:source\s+|\.\s+)<\([\s\S]*\b(?:curl|wget|fetch)\b/i,
   // Decode-then-execute: `base64 -d | sh`, `openssl … | bash` (payload is hidden).
   /\bbase64\b[\s\S]*\s-{1,2}d\w*\b[\s\S]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish)\b/i,
+];
+
+// The in-language analogue of `curl … | sh`: an interpreter running INLINE code (via
+// `-c`/`-e`/`-r`) that both FETCHES over the network and EXECUTES the result, with no
+// shell for the shell-pipe rules above to anchor on — e.g.
+// `python -c "exec(urlopen(u).read())"`, `node -e "eval(require('https').get(...))"`.
+// Requires all three signals (interpreter+inline flag, a fetch primitive, an exec
+// primitive) so ordinary inline scripts — `python -c "print(requests.get(u).json())"`
+// (fetch, no exec) or `python -c "exec(open('setup.py').read())"` (exec, no fetch) —
+// do not gate, keeping the false-positive rate at zero.
+const INLINE_INTERPRETER_RE = /\b(?:python[0-9.]*|node|deno|bun|ruby|perl|php|Rscript)\b[\s\S]*\s-(?:c|e|r|p|-eval|-command)\b/i;
+const INLINE_FETCH_RE = /\b(?:urlopen|urlretrieve|urllib|requests\.(?:get|post)|http\.get|https\.get|fetch\(|Net::HTTP|open-uri|LWP|file_get_contents|curl_exec)\b|require\(\s*['"](?:node:)?https?['"]\s*\)|open\(\s*['"]https?:/i;
+const INLINE_EXEC_RE = /\b(?:exec|eval|compile|__import__|os\.system|subprocess|popen|child_process|execSync|spawnSync|Function|pickle\.loads|marshal\.loads|instance_eval)\b/i;
+function isInlineFetchExec(text) {
+  return INLINE_INTERPRETER_RE.test(text) && INLINE_FETCH_RE.test(text) && INLINE_EXEC_RE.test(text);
+}
+
+// Permission/ownership changes broad enough to be a security event: a recursive chmod
+// to a world-writable/all-permissions mode (dangerous regardless of path), or a
+// recursive chmod/chown reaching a sensitive system path (`/etc`, `/usr`, `/`, …).
+// Deliberately NOT matched: a single-file `chmod 777 x` or a recursive `chmod -R 755
+// ./dist` in a project dir — routine work that would cost more in false positives than
+// it buys.
+const PERMISSION_CHANGE_PATTERNS = [
+  /\bchmod\b(?=[\s\S]*(?:\s-[a-zA-Z]*R\b|\s--recursive\b))[\s\S]*\b(?:0?777|0?666|a\+w|o\+w|a=rwx)\b/i,
+  /\b(?:chmod|chown)\b[\s\S]*(?:\s-[a-zA-Z]*R\b|\s--recursive\b)[\s\S]*\s\/(?:etc|usr|bin|sbin|var|boot|lib|lib64|root|sys|proc|dev|opt|System|Library)\b/i,
+  /\b(?:chmod|chown)\b[\s\S]*(?:\s-[a-zA-Z]*R\b|\s--recursive\b)[\s\S]*\s\/(?:\s|$)/i,
+];
+
+// Fork bombs — the recursive self-forking that exhausts process slots and takes the
+// host down. The classic `:(){ :|:& };:` plus named variants `f(){ f|f& };f`. The
+// signature (a function whose body pipes itself into itself in the background, then is
+// invoked) is specific enough that a legitimate command effectively never matches.
+const RESOURCE_EXHAUSTION_PATTERNS = [
+  /:\s*\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
+  /\b(\w+)\s*\(\)\s*\{[^}]*\b\1\s*\|\s*\1\b[^}]*&[^}]*\}\s*;\s*\1\b/,
 ];
 
 const PUBLISH_PATTERNS = [
@@ -581,8 +619,14 @@ export function inferEffectsFromToolCall(event) {
     if (anyPattern(DESTRUCTIVE_PATTERNS, execText)) {
       effects.add("delete_data");
     }
-    if (anyPattern(REMOTE_EXEC_PATTERNS, execText)) {
+    if (anyPattern(REMOTE_EXEC_PATTERNS, execText) || isInlineFetchExec(execText)) {
       effects.add("execute_remote_code");
+    }
+    if (anyPattern(PERMISSION_CHANGE_PATTERNS, execText)) {
+      effects.add("change_permissions");
+    }
+    if (anyPattern(RESOURCE_EXHAUSTION_PATTERNS, execText)) {
+      effects.add("exhaust_resources");
     }
     if (anyPattern(PUBLISH_PATTERNS, execText)) {
       effects.add("publish");

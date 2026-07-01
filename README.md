@@ -192,7 +192,7 @@ This plugin is intentionally narrow — host policy that wraps prepared turns.
 ## Red-team coverage
 
 The gate ships with a reproducible benchmark (`bench/`) — a labelled corpus of
-**40 malicious** tool calls that must be gated and **26 benign** calls that must not — run
+**48 malicious** tool calls that must be gated and **31 benign** calls that must not — run
 through the exact `beforeToolCallDecision` entry point used in production:
 
 ```bash
@@ -203,8 +203,8 @@ Current, measured result:
 
 | Metric | Result | Meaning |
 | --- | :---: | --- |
-| **Corpus pass-rate** | **100%** (40/40) | every risky call in the corpus — destructive shell/SQL, raw-disk wipes, pipe-to-shell & fetch-then-execute (`curl … \| sh`, `curl … \| python`, `bash -c "$(curl …)"`, `eval "$(curl …)"`), argv-split & nested payloads, production deploys, publishing, messaging, billing, secret exposure — is blocked or sent for approval. |
-| **False-positive-rate** | **0%** (26/26) | ordinary safe work — reads, `SELECT`, `npm test`, a `\| ssh` pipe, `curl … \| python -m json.tool` (data, not code), SQL/shell keywords as *text* — passes untouched, so the gate never cries wolf. |
+| **Corpus pass-rate** | **100%** (48/48) | every risky call in the corpus — destructive shell/SQL, raw-disk wipes, pipe-to-shell & fetch-then-execute (`curl … \| sh`, `curl … \| python`, `bash -c "$(curl …)"`, `eval "$(curl …)"`), in-language fetch+exec (`python -c "exec(urlopen(…))"`), dangerous recursive `chmod -R 777`/`chown -R`, fork bombs, argv-split & nested payloads, production deploys, publishing, messaging, billing, secret exposure — is blocked or sent for approval. |
+| **False-positive-rate** | **0%** (31/31) | ordinary safe work — reads, `SELECT`, `npm test`, a `\| ssh` pipe, `curl … \| python -m json.tool` (data, not code), `chmod -R 755 ./dist`, `python -c "exec(open('setup.py'))"` (local, no fetch), SQL/shell keywords as *text* — passes untouched, so the gate never cries wolf. |
 
 These thresholds are enforced in CI (`bench/bench.test.mjs`), so a change that lets a
 corpus risk slip through — or starts gating safe work — fails the build.
@@ -212,16 +212,18 @@ corpus risk slip through — or starts gating safe work — fails the build.
 > **Read the number honestly.** This corpus is **author-written**: the same project wrote
 > both the attacks and the defenses, so 100% means *"the gate handles every case we thought
 > to include"* — a regression fence, **not** a measured catch-rate against an independent
-> adversary. Genuinely uncovered evasions are disclosed, not hidden:
+> adversary. The blind spots that remain are disclosed, not hidden — each verified `ALLOWED`
+> against the live gate:
 >
-> - **in-language fetch+exec** — `python -c "exec(urlopen(u).read())"`, `node -e "eval(…)"`
->   (fetch and exec happen inside interpreter code, with no shell for the patterns to anchor on);
-> - **recursive `chmod -R 777` / `chown -R`** — deliberately left un-gated, because gating
->   routine recursive chmod would cost more in false positives than it buys;
-> - **fork bombs** (`:(){ :|:& };:`) — no tractable static signature.
+> - **obfuscated local exec with no fetch** — `python -c "exec(base64.b64decode('…'))"`
+>   (an exec primitive but no network fetch, so it is not remote code execution, and gating
+>   every inline `exec(` would over-fire);
+> - **interpreters outside the covered set** — `lua -e`, `tclsh`, `groovy -e`;
+> - **a fetch via an unenumerated primitive** — `httpx`, `aiohttp`, a raw socket.
 >
 > Adding any of these to [`bench/corpus.mjs`](bench/corpus.mjs) as a malicious case would
-> (correctly) turn the run red until the gate handles it.
+> (correctly) turn the run red until the gate handles it. (Earlier disclosed blind spots —
+> in-language fetch+exec, recursive `chmod -R 777`, fork bombs — are **now gated**.)
 
 ## Development
 
